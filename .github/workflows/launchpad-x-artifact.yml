@@ -6,6 +6,7 @@ on:
       - launchpad-x-baseline
       - launchpad-x-hold-low
       - launchpad-x-led-feedback
+      - launchpad-x-hold-80-led
   workflow_dispatch:
 
 permissions:
@@ -17,7 +18,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback'
+    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback' || github.ref == 'refs/heads/launchpad-x-hold-80-led'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -56,7 +57,8 @@ jobs:
               if not path.is_file() or path.stat().st_size == 0:
                   raise SystemExit(f'Missing or empty: {path}')
           branch = os.environ['REF_NAME']
-          expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112, 'launchpad-x-led-feedback': 144}
+          expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112,
+                      'launchpad-x-led-feedback': 144, 'launchpad-x-hold-80-led': 80}
           if branch not in expected:
               raise SystemExit(f'Unexpected branch: {branch}')
           text = pathlib.Path('src/sys/driver/launchpad-x/inputs.rs').read_text()
@@ -68,7 +70,8 @@ jobs:
           start, release = constant('LP_PRESS_START_NORM'), constant('LP_PRESS_RELEASE_NORM')
           if start != 300 or release != expected[branch]:
               raise SystemExit(f'Unexpected thresholds: start={start}, release={release}')
-          if branch == 'launchpad-x-led-feedback':
+          led_enabled = branch in ('launchpad-x-led-feedback', 'launchpad-x-hold-80-led')
+          if led_enabled:
               feedback = pathlib.Path('src/app/performance/mod.rs').read_text()
               if 'led::set(index, if event.pressed { 0x00ff00 } else { 0 });' not in feedback:
                   raise SystemExit('Local press/release LED feedback not found')
@@ -93,14 +96,15 @@ jobs:
           (stage / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
           kinds = {'launchpad-x-baseline': 'baseline（上流の感度値を変更していない版）',
                    'launchpad-x-hold-low': '実験版（保持感度の試作）',
-                   'launchpad-x-led-feedback': 'LED確認版（baselineの感度値、押下中だけ緑に点灯）'}
+                   'launchpad-x-led-feedback': 'LED確認版（baselineの感度値、押下中だけ緑に点灯）',
+                   'launchpad-x-hold-80-led': '保持感度の追加試作（LED点灯、解放80）'}
           kind = kinds[branch]
           (stage / '説明.txt').write_text(
               f'対象: Novation Launchpad X（Pro / Pro MK3 ではありません）\n'
               f'種別: {kind}\nソースSHA: {os.environ["SOURCE_SHA"]}\n'
               'ツールチェーン: Rust 1.94.1 / thumbv7em-none-eabihf / rust-src / llvm-tools; GitHub ubuntu-24.04\n'
               f'CoreFW内部値: LP_PRESS_START_NORM=300, LP_PRESS_RELEASE_NORM={release}\n'
-              f'LED: {"押下中だけ緑に点灯し解放時に消灯（ホストからのLED命令がない場合）" if branch == "launchpad-x-led-feedback" else "パッドのローカル点灯なし"}\n'
+              f'LED: {"押下中だけ緑に点灯し解放時に消灯（ホストからのLED命令がない場合）" if led_enabled else "パッドのローカル点灯なし"}\n'
               '実機未検証。純正ファームウェアの設定値・動作を示すものではありません。\n'
           )
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:

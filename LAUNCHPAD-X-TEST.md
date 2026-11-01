@@ -20,6 +20,8 @@ workflow は専用ブランチへの push と `workflow_dispatch` に対応す�
 
 LED確認版 `launchpad-x-led-feedback` は **baselineと同じ内部感度値**（開始300、解放144）で、Performance Modeの押下を受け付けたパッドを緑に点灯し、解放判定時に消灯する。音・MIDI送信処理は変えず、純正のNote Modeも追加しない。点灯は内部押下状態の表示であり、PCへのMIDI到達を保証しない。PCから同じパッドへLED用MIDIを送ると表示が上書きされ得るため、まずホスト側のLED送信を止めて確認する。点灯がない場合でも入力経路や明るさなど原因は確定しないので、可能ならMIDIログと併せて判断する。
 
+`launchpad-x-hold-80-led` は LED確認版の解放閾値だけを **144 → 80** とした追加試作。以前の `112` でも保持中に Note On velocity 0 が観測されたため、保持側だけをもう一段試す。**80は実機の生データに基づく推奨値ではない**。押し始めの閾値300とベロシティ曲線は変わらず、軽い押下が認識されない問題は直らない。指を離したときの解放遅れ・鳴りっぱなし・放置時の誤発音を注意して比較する。なお、入力が実際にゼロ近くに落ちている場合はこの変更でも保持できず、測定なしに解放値をさらに下げるべきではない。
+
 ## 変更対象と判定の限界
 
 基準値は `LP_PRESS_START_NORM=300`、`LP_PRESS_RELEASE_NORM=144`、`LP_PRESS_ON_COUNT=1`、`LP_RELEASE_COUNT=8`、`LP_RELEASE_HOLDOFF=10`、`LP_BASELINE_GUARD=96`。これらは **CoreFW 内部値**で、純正設定・グラム・ミリ秒ではない。解放判定は `delta <= release` の連続8回かつ holdoff 終了後。押している間は基準値追従を止め、解放時に `grid_base=filt` とする。`LP_PRESS_START_NORM` はベロシティ計算にも使われるので、開始値を後で変更するなら曲線への影響を別途検討する。
