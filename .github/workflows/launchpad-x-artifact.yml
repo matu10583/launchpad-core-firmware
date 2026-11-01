@@ -5,6 +5,7 @@ on:
     branches:
       - launchpad-x-baseline
       - launchpad-x-hold-low
+      - launchpad-x-led-feedback
   workflow_dispatch:
 
 permissions:
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low'
+    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -55,7 +56,7 @@ jobs:
               if not path.is_file() or path.stat().st_size == 0:
                   raise SystemExit(f'Missing or empty: {path}')
           branch = os.environ['REF_NAME']
-          expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112}
+          expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112, 'launchpad-x-led-feedback': 144}
           if branch not in expected:
               raise SystemExit(f'Unexpected branch: {branch}')
           text = pathlib.Path('src/sys/driver/launchpad-x/inputs.rs').read_text()
@@ -67,6 +68,10 @@ jobs:
           start, release = constant('LP_PRESS_START_NORM'), constant('LP_PRESS_RELEASE_NORM')
           if start != 300 or release != expected[branch]:
               raise SystemExit(f'Unexpected thresholds: start={start}, release={release}')
+          if branch == 'launchpad-x-led-feedback':
+              feedback = pathlib.Path('src/app/performance/mod.rs').read_text()
+              if 'led::set(index, if event.pressed { 0x00ff00 } else { 0 });' not in feedback:
+                  raise SystemExit('Local press/release LED feedback not found')
           data = json.loads(manifest.read_text())
           if (data['model']['name'] != 'Launchpad X'
                   or data['updater']['product'] != '/x'
@@ -86,16 +91,20 @@ jobs:
           shutil.copy2(manifest, stage / manifest.name)
           lines = [f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}' for p in (stage / syx.name, stage / manifest.name)]
           (stage / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
-          kind = 'baseline（上流の感度値を変更していない版）' if release == 144 else '実験版（保持感度の試作）'
+          kinds = {'launchpad-x-baseline': 'baseline（上流の感度値を変更していない版）',
+                   'launchpad-x-hold-low': '実験版（保持感度の試作）',
+                   'launchpad-x-led-feedback': 'LED確認版（baselineの感度値、押下中だけ緑に点灯）'}
+          kind = kinds[branch]
           (stage / '説明.txt').write_text(
               f'対象: Novation Launchpad X（Pro / Pro MK3 ではありません）\n'
               f'種別: {kind}\nソースSHA: {os.environ["SOURCE_SHA"]}\n'
               'ツールチェーン: Rust 1.94.1 / thumbv7em-none-eabihf / rust-src / llvm-tools; GitHub ubuntu-24.04\n'
               f'CoreFW内部値: LP_PRESS_START_NORM=300, LP_PRESS_RELEASE_NORM={release}\n'
+              f'LED: {"押下中だけ緑に点灯し解放時に消灯（ホストからのLED命令がない場合）" if branch == "launchpad-x-led-feedback" else "パッドのローカル点灯なし"}\n'
               '実機未検証。純正ファームウェアの設定値・動作を示すものではありません。\n'
           )
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'kind={"baseline" if release == 144 else "hold-low"}\nrelease={release}\nshort_sha={os.environ["SOURCE_SHA"][:12]}\n')
+              out.write(f'kind={branch.removeprefix("launchpad-x-")}\nrelease={release}\nshort_sha={os.environ["SOURCE_SHA"][:12]}\n')
           PY
           cd artifact
           sha256sum --check SHA256SUMS.txt
