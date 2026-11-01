@@ -11,6 +11,8 @@ use crate::sys::led;
 use crate::sys::settings;
 
 const PERFORMANCE_BUTTON: u8 = 11;
+#[cfg(feature = "launchpad-x")]
+const NOTE_BUTTON: u8 = 14;
 const PROGRAMMER_BUTTON: u8 = 13;
 const DAW_BUTTON: u8 = 12;
 const PALETTE_RAINBOW_BUTTON: u8 = 25;
@@ -48,7 +50,10 @@ impl InitPage {
     }
 
     pub fn set_current_mode(&mut self, app: AppId) {
-        if matches!(app, AppId::Performance | AppId::Programmer | AppId::Daw) {
+        let supported = matches!(app, AppId::Performance | AppId::Programmer | AppId::Daw);
+        #[cfg(feature = "launchpad-x")]
+        let supported = supported || app == AppId::Note;
+        if supported {
             self.current_mode = app;
             self.selected_mode = None;
         }
@@ -94,6 +99,8 @@ impl InitPage {
                 0x401000
             },
         );
+        #[cfg(feature = "launchpad-x")]
+        led::set(NOTE_BUTTON, if mode == AppId::Note { 0x239fd1 } else { 0x102a35 });
     }
 
     fn draw_palette_selector(&self) {
@@ -180,6 +187,11 @@ impl Page for InitPage {
             }
             PROGRAMMER_BUTTON => {
                 self.selected_mode = Some(AppId::Programmer);
+                self.draw_mode_selector();
+            }
+            #[cfg(feature = "launchpad-x")]
+            NOTE_BUTTON => {
+                self.selected_mode = Some(AppId::Note);
                 self.draw_mode_selector();
             }
             #[cfg(feature = "rgb-color")]

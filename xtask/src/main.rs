@@ -9,6 +9,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// This pure mapping module can be tested on the hosted CI runner without
+// compiling the ARM-specific firmware input driver for the host.
+#[cfg(test)]
+#[path = "../../src/app/note/layout.rs"]
+mod note_layout;
+
 fn find_objcopy() -> Result<PathBuf, Box<dyn Error>> {
     let check = if cfg!(windows) {
         Command::new("where").arg("arm-none-eabi-objcopy").output()

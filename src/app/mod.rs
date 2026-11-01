@@ -6,6 +6,8 @@ pub mod boot;
 pub mod daw;
 pub mod events;
 pub mod host;
+#[cfg(feature = "launchpad-x")]
+pub mod note;
 pub mod palette_editor;
 pub mod performance;
 pub mod programmer;
@@ -22,6 +24,8 @@ pub enum AppId {
     Boot,
     Setup,
     Performance,
+    #[cfg(feature = "launchpad-x")]
+    Note,
     Programmer,
     Daw,
     PaletteEditor,

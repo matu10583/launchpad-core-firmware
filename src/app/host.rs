@@ -5,6 +5,8 @@ use crate::app::boot::BootApp;
 use crate::app::daw::DawApp;
 use crate::app::palette_editor::PaletteEditorApp;
 use crate::app::performance::PerformanceApp;
+#[cfg(feature = "launchpad-x")]
+use crate::app::note::NoteApp;
 use crate::app::programmer::ProgrammerApp;
 use crate::app::setup::SetupApp;
 use crate::app::{AftertouchEvent, App, AppId, MidiEvent, SurfaceEvent};
@@ -27,6 +29,8 @@ pub struct AppHost {
     boot: BootApp,
     setup: SetupApp,
     performance: PerformanceApp,
+    #[cfg(feature = "launchpad-x")]
+    note: NoteApp,
     programmer: ProgrammerApp,
     daw: DawApp,
     pending_host_switch: Option<AppId>,
@@ -48,6 +52,8 @@ impl AppHost {
             boot: BootApp::new(),
             setup: SetupApp::new(),
             performance: PerformanceApp::new(),
+            #[cfg(feature = "launchpad-x")]
+            note: NoteApp::new(),
             programmer: ProgrammerApp::new(),
             daw: DawApp::new(),
             pending_host_switch: None,
@@ -69,6 +75,8 @@ impl AppHost {
             AppId::Boot => &mut self.boot,
             AppId::Setup => &mut self.setup,
             AppId::Performance => &mut self.performance,
+            #[cfg(feature = "launchpad-x")]
+            AppId::Note => &mut self.note,
             AppId::Programmer => &mut self.programmer,
             AppId::Daw => &mut self.daw,
             AppId::PaletteEditor => &mut self.palette_editor,
@@ -105,6 +113,14 @@ impl AppHost {
 
     #[inline(never)]
     pub fn route_surface_event(&mut self, event: SurfaceEvent) {
+        #[cfg(feature = "launchpad-x")]
+        if event.index == 96 && matches!(self.current, AppId::Performance | AppId::Programmer) {
+            if event.pressed {
+                self.switch(AppId::Note);
+            }
+            return;
+        }
+
         if event.index != 0 {
             let mut canonical_event = event;
             canonical_event.index = self.to_canonical_index(event.index);
