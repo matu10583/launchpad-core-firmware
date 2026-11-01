@@ -87,6 +87,10 @@ mod tests {
 
     #[test]
     fn major_and_classic_layouts_have_distinct_notes() {
+        assert_eq!(Preset::from_slot(0).map(Preset::slot), Some(0));
+        assert_eq!(Preset::from_slot(1).map(Preset::slot), Some(1));
+        assert_eq!(Preset::from_slot(2).map(Preset::slot), Some(2));
+        assert_eq!(Preset::from_slot(3).map(Preset::slot), None);
         assert_eq!(note_for(Preset::Major, 12, 0), Some(50));
         assert_eq!(note_for(Preset::Major, 15, 0), Some(60));
         assert_eq!(note_for(Preset::Classic, 11, 0), Some(36));
@@ -99,7 +103,7 @@ mod tests {
         let c = note_for(Preset::Chromatic, 11, 1).unwrap();
         assert_eq!(c, 49);
         assert_eq!(base_color(c, 1), 0xff47ce);
-        assert_eq!(base_color(48, 1), 0x181818);
+        assert_eq!(base_color(48, 1), 0x239fd1); // B relative to C#
         assert_eq!(base_color(50, 0), 0x239fd1);
         assert_eq!(base_color(49, 0), 0x181818);
         assert_eq!(note_for(Preset::Major, 11, 12), Some(60));
