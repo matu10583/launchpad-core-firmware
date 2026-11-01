@@ -1,0 +1,127 @@
+name: Launchpad X firmware artifact
+
+on:
+  push:
+    branches:
+      - launchpad-x-baseline
+      - launchpad-x-hold-low
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lpx-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust and ARM tools
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94.1'
+          targets: thumbv7em-none-eabihf
+          components: rust-src,llvm-tools
+
+      - name: Check host xtask tests
+        run: cargo test --locked -p xtask
+
+      - name: Package Launchpad X only
+        env:
+          CORE_FW_CARGO_LOCKED: '1'
+        run: cargo run --locked -p xtask -- package lpx --release
+
+      - name: Validate and stage artifact
+        id: metadata
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, shutil
+          root = pathlib.Path('build')
+          syx = root / 'core-launchpad-x.syx'
+          manifest = root / 'core-launchpad-x.manifest.json'
+          for path in (syx, manifest):
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty: {path}')
+          branch = os.environ['REF_NAME']
+          expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112}
+          if branch not in expected:
+              raise SystemExit(f'Unexpected branch: {branch}')
+          text = pathlib.Path('src/sys/driver/launchpad-x/inputs.rs').read_text()
+          def constant(name):
+              match = re.search(r'^const ' + name + r': u16 = (\d+);$', text, re.M)
+              if not match:
+                  raise SystemExit(f'Missing constant: {name}')
+              return int(match[1])
+          start, release = constant('LP_PRESS_START_NORM'), constant('LP_PRESS_RELEASE_NORM')
+          if start != 300 or release != expected[branch]:
+              raise SystemExit(f'Unexpected thresholds: start={start}, release={release}')
+          data = json.loads(manifest.read_text())
+          if (data['model']['name'] != 'Launchpad X'
+                  or data['updater']['product'] != '/x'
+                  or data['source_commit'] != os.environ['SOURCE_SHA']
+                  or data['source_dirty'] is not False):
+              raise SystemExit('Manifest model, product, SHA, or source cleanliness mismatch')
+          record = next((a for a in data['artifacts'] if a['name'] == syx.name), None)
+          if not record or record['size'] != syx.stat().st_size:
+              raise SystemExit('SysEx manifest size mismatch')
+          import hashlib
+          digest = hashlib.sha256(syx.read_bytes()).hexdigest()
+          if record['sha256'] != digest or not record['message_count']:
+              raise SystemExit('SysEx digest or message count mismatch')
+          stage = pathlib.Path('artifact')
+          stage.mkdir()
+          shutil.copy2(syx, stage / syx.name)
+          shutil.copy2(manifest, stage / manifest.name)
+          lines = [f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}' for p in (stage / syx.name, stage / manifest.name)]
+          (stage / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
+          kind = 'baseline（上流の感度値を変更していない版）' if release == 144 else '実験版（保持感度の試作）'
+          (stage / '説明.txt').write_text(
+              f'対象: Novation Launchpad X（Pro / Pro MK3 ではありません）\n'
+              f'種別: {kind}\nソースSHA: {os.environ["SOURCE_SHA"]}\n'
+              'ツールチェーン: Rust 1.94.1 / thumbv7em-none-eabihf / rust-src / llvm-tools; GitHub ubuntu-24.04\n'
+              f'CoreFW内部値: LP_PRESS_START_NORM=300, LP_PRESS_RELEASE_NORM={release}\n'
+              '実機未検証。純正ファームウェアの設定値・動作を示すものではありません。\n'
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'kind={"baseline" if release == 144 else "hold-low"}\nrelease={release}\nshort_sha={os.environ["SOURCE_SHA"][:12]}\n')
+          PY
+          cd artifact
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Upload four files (14 days)
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: launchpad-x-${{ steps.metadata.outputs.kind }}-${{ steps.metadata.outputs.short_sha }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write job summary
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          SOURCE_SHA: ${{ github.sha }}
+          KIND: ${{ steps.metadata.outputs.kind }}
+          RELEASE: ${{ steps.metadata.outputs.release }}
+        run: |
+          test -n "$ARTIFACT_URL"
+          {
+            echo '## Launchpad X firmware（実機未検証）'
+            echo "- Artifact: [$KIND（ZIP）]($ARTIFACT_URL)"
+            echo "- ソースSHA: \`$SOURCE_SHA\`"
+            echo "- CoreFW内部値: LP_PRESS_START_NORM=300, LP_PRESS_RELEASE_NORM=$RELEASE"
+            echo '- Rust 1.94.1 / thumbv7em-none-eabihf / rust-src / llvm-tools'
+            echo '- PCのブラウザでArtifactのZIPを取得し、中の `core-launchpad-x.syx` を使う。書き込み前に説明と復旧手順を確認。'
+          } >> "$GITHUB_STEP_SUMMARY"
