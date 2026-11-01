@@ -30,7 +30,10 @@ const LP_GRID_QUEUE_LEN: usize = 64;
 /// Minimum pressure required to trigger a Note On.
 ///
 /// Resting fingers or light touches below this value are ignored.
-const LP_PRESS_START_NORM: u16 = 300;
+const LP_PRESS_START_NORM: u16 = 112;
+
+/// Preserve the original velocity curve independently of the press trigger.
+const LP_VELOCITY_START_NORM: u16 = 300;
 
 /// Pressure threshold to trigger a Note Off.
 ///
@@ -559,11 +562,11 @@ fn usat7(val: u32) -> u8 {
 
 #[inline(always)]
 fn norm_to_velocity(norm: u16) -> u8 {
-    if norm <= LP_PRESS_START_NORM {
+    if norm <= LP_VELOCITY_START_NORM {
         return 1;
     }
 
-    let value = (((norm - LP_PRESS_START_NORM) as u32) * LP_VELOCITY_GAIN_NUM) / 0x0ed4;
+    let value = (((norm - LP_VELOCITY_START_NORM) as u32) * LP_VELOCITY_GAIN_NUM) / 0x0ed4;
     usat7(value).max(1)
 }
 
