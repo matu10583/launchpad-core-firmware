@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
 mod layout;
+mod transpose;
 
 use crate::app::apptrait::App;
 use crate::app::events::{AftertouchEvent, MidiEvent, SurfaceEvent};
@@ -12,16 +13,15 @@ use crate::sys::midi::MidiPort;
 use crate::sys::settings;
 
 use layout::{base_color, grid_slot, note_for, Preset};
-
-const MIN_TRANSPOSE: i16 = -24;
-const MAX_TRANSPOSE: i16 = 12;
+use transpose::Transpose;
 
 pub struct NoteApp {
     preset: Preset,
-    transpose: i16,
-    octave_presses: i8,
+    transpose: Transpose,
     up_held: bool,
     down_held: bool,
+    left_held: bool,
+    right_held: bool,
     choosing: bool,
     // Latch the actual sounding note so releasing a pad cannot turn off a
     // different pitch after a layout or transpose change.
@@ -32,10 +32,11 @@ impl NoteApp {
     pub const fn new() -> Self {
         Self {
             preset: Preset::Chromatic,
-            transpose: 0,
-            octave_presses: 0,
+            transpose: Transpose::new(),
             up_held: false,
             down_held: false,
+            left_held: false,
+            right_held: false,
             choosing: false,
             active: [None; 64],
         }
@@ -61,13 +62,13 @@ impl NoteApp {
 
     fn pad_color(&self, note: u8) -> u32 {
         if self.pitch_lit(note) {
-            if (note as i16 - self.transpose).rem_euclid(12) == 0 {
+            if (note as i16 - self.transpose.total()).rem_euclid(12) == 0 {
                 0xffa2ea
             } else {
                 0x9beaff
             }
         } else {
-            base_color(note, self.transpose)
+            base_color(note, self.transpose.total())
         }
     }
 
@@ -75,7 +76,7 @@ impl NoteApp {
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                if note_for(self.preset, index, self.transpose) == Some(pitch) {
+                if note_for(self.preset, index, self.transpose.total()) == Some(pitch) {
                     led::set(index, self.pad_color(pitch));
                 }
             }
@@ -95,7 +96,7 @@ impl NoteApp {
                         0
                     }
                 } else {
-                    note_for(self.preset, index, self.transpose)
+                    note_for(self.preset, index, self.transpose.total())
                         .map_or(0, |note| self.pad_color(note))
                 };
                 led::set(index, color);
@@ -103,11 +104,11 @@ impl NoteApp {
         }
 
         for (index, step) in [(91, 12), (92, -12), (93, -1), (94, 1)] {
-            let disabled = self.choosing || (self.transpose + step).clamp(MIN_TRANSPOSE, MAX_TRANSPOSE) == self.transpose;
-            let color = if !self.choosing && step == 12 && self.octave_presses > 0 {
+            let disabled = self.choosing || self.transpose.shifted(step).is_none();
+            let color = if !self.choosing && step == 12 && self.transpose.octaves > 0 {
                 0x40e8ff // one press upwards (maximum is +1 octave)
-            } else if !self.choosing && step == -12 && self.octave_presses < 0 {
-                if self.octave_presses <= -2 { 0x00eaff } else { 0x146778 }
+            } else if !self.choosing && step == -12 && self.transpose.octaves < 0 {
+                if self.transpose.octaves <= -2 { 0x00eaff } else { 0x146778 }
             } else if disabled {
                 0x102020
             } else if step.abs() == 12 {
@@ -122,34 +123,37 @@ impl NoteApp {
         led::set_raw(97, if self.choosing { 0xff47ce } else { 0x239fd1 }); // Preset selector.
     }
 
-    fn set_transpose(&mut self, step: i16) {
-        let next = (self.transpose + step).clamp(MIN_TRANSPOSE, MAX_TRANSPOSE);
-        if next == self.transpose {
-            return;
-        }
+    fn change_transpose(&mut self, next: Transpose) {
         self.release_all();
         self.transpose = next;
-        if step == 12 {
-            self.octave_presses = (self.octave_presses + 1).min(1);
-        } else if step == -12 {
-            self.octave_presses = (self.octave_presses - 1).max(-2);
-        }
         self.draw();
     }
 
-    fn octave_button(&mut self, up: bool, pressed: bool) {
-        let was_held = if up { self.up_held } else { self.down_held };
-        if up { self.up_held = pressed; } else { self.down_held = pressed; }
+    fn set_transpose(&mut self, step: i16) {
+        if let Some(next) = self.transpose.shifted(step) {
+            self.change_transpose(next);
+        }
+    }
+
+    fn transpose_button(&mut self, index: u8, pressed: bool) {
+        let held = match index {
+            91 => &mut self.up_held,
+            92 => &mut self.down_held,
+            93 => &mut self.left_held,
+            94 => &mut self.right_held,
+            _ => return,
+        };
+        let was_held = *held;
+        *held = pressed;
         if !pressed || was_held || self.choosing {
             return;
         }
-        if self.up_held && self.down_held {
-            self.release_all();
-            self.transpose = 0;
-            self.octave_presses = 0;
-            self.draw();
+        if (index == 91 || index == 92) && self.up_held && self.down_held {
+            self.change_transpose(self.transpose.without_octaves());
+        } else if (index == 93 || index == 94) && self.left_held && self.right_held {
+            self.change_transpose(self.transpose.without_semitones());
         } else {
-            self.set_transpose(if up { 12 } else { -12 });
+            self.set_transpose(match index { 91 => 12, 92 => -12, 93 => -1, _ => 1 });
         }
     }
 }
@@ -159,6 +163,8 @@ impl App for NoteApp {
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
+        self.left_held = false;
+        self.right_held = false;
         self.draw();
     }
 
@@ -167,6 +173,8 @@ impl App for NoteApp {
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
+        self.left_held = false;
+        self.right_held = false;
     }
 
     fn on_surface(&mut self, event: SurfaceEvent) {
@@ -187,7 +195,7 @@ impl App for NoteApp {
             if self.active[slot].is_some() {
                 return;
             }
-            let Some(note) = note_for(self.preset, event.index, self.transpose) else { return };
+            let Some(note) = note_for(self.preset, event.index, self.transpose.total()) else { return };
             let velocity = settings::with(|s| {
                 if s.velocity_enabled == 0 { 127 } else { apply_velocity_curve(s.velocity_curve, event.value) }
             });
@@ -207,10 +215,7 @@ impl App for NoteApp {
 
     fn on_surface_raw(&mut self, event: SurfaceEvent) {
         match event.index {
-            91 => self.octave_button(true, event.pressed),
-            92 => self.octave_button(false, event.pressed),
-            93 if event.pressed && !self.choosing => self.set_transpose(-1),
-            94 if event.pressed && !self.choosing => self.set_transpose(1),
+            91..=94 => self.transpose_button(event.index, event.pressed),
             96 if event.pressed && self.choosing => { self.choosing = false; self.draw(); }
             97 if event.pressed => { self.release_all(); self.choosing = !self.choosing; self.draw(); }
             _ => {}

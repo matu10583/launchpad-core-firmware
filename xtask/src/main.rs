@@ -19,6 +19,10 @@ mod note_layout;
 #[path = "../../src/app/note/velocity.rs"]
 mod note_velocity;
 
+#[cfg(test)]
+#[path = "../../src/app/note/transpose.rs"]
+mod note_transpose;
+
 fn find_objcopy() -> Result<PathBuf, Box<dyn Error>> {
     let check = if cfg!(windows) {
         Command::new("where").arg("arm-none-eabi-objcopy").output()
