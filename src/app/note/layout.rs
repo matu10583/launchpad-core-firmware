@@ -44,11 +44,11 @@ pub fn note_for(preset: Preset, index: u8, transpose: i16) -> Option<u8> {
     let col = (index % 10 - 1) as i16;
     let step = row * 4 + col % 4;
     let note = match preset {
-        // Four semitones per row; the right half repeats one octave higher.
-        Preset::Chromatic => 48 + step + (col / 4) * 12,
-        // Four C-major scale degrees per row; right half is an octave higher.
+        // Right bottom two rows equal left top two rows (six four-note rows).
+        Preset::Chromatic => 48 + step + (col / 4) * 24,
+        // The same two-row overlap, measured in scale degrees.
         Preset::Major => {
-            let degree = step + (col / 4) * 7;
+            let degree = step + (col / 4) * 24;
             const SCALE: [i16; 7] = [0, 2, 4, 5, 7, 9, 11];
             48 + (degree / 7) * 12 + SCALE[(degree % 7) as usize]
         }
@@ -76,13 +76,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chromatic_four_step_rows_repeat_an_octave_on_the_right() {
+    fn chromatic_four_step_rows_overlap_only_two_rows() {
         assert_eq!(note_for(Preset::Chromatic, 11, 0), Some(48));
         assert_eq!(note_for(Preset::Chromatic, 14, 0), Some(51));
-        assert_eq!(note_for(Preset::Chromatic, 15, 0), Some(60));
+        assert_eq!(note_for(Preset::Chromatic, 15, 0), Some(72));
         assert_eq!(note_for(Preset::Chromatic, 21, 0), Some(52));
         assert_eq!(note_for(Preset::Chromatic, 41, 0), Some(60));
-        assert_eq!(note_for(Preset::Chromatic, 88, 0), Some(91));
+        for col in 0..4 {
+            assert_eq!(note_for(Preset::Chromatic, 15 + col, 0), note_for(Preset::Chromatic, 71 + col, 0));
+            assert_eq!(note_for(Preset::Chromatic, 25 + col, 0), note_for(Preset::Chromatic, 81 + col, 0));
+        }
+        assert_ne!(note_for(Preset::Chromatic, 35, 0), note_for(Preset::Chromatic, 81, 0));
+        assert_eq!(note_for(Preset::Chromatic, 88, 0), Some(103));
     }
 
     #[test]
@@ -92,7 +97,9 @@ mod tests {
         assert_eq!(Preset::from_slot(2).map(Preset::slot), Some(2));
         assert_eq!(Preset::from_slot(3).map(Preset::slot), None);
         assert_eq!(note_for(Preset::Major, 12, 0), Some(50));
-        assert_eq!(note_for(Preset::Major, 15, 0), Some(60));
+        assert_eq!(note_for(Preset::Major, 15, 0), note_for(Preset::Major, 71, 0));
+        assert_eq!(note_for(Preset::Major, 25, 0), note_for(Preset::Major, 81, 0));
+        assert_eq!(note_for(Preset::Major, 88, 0), None); // Above MIDI 127.
         assert_eq!(note_for(Preset::Classic, 11, 0), Some(36));
         assert_eq!(note_for(Preset::Classic, 15, 0), Some(68));
         assert_eq!(note_for(Preset::Classic, 88, 0), Some(99));

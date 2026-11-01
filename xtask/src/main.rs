@@ -15,6 +15,10 @@ use std::process::Command;
 #[path = "../../src/app/note/layout.rs"]
 mod note_layout;
 
+#[cfg(test)]
+#[path = "../../src/app/note/velocity.rs"]
+mod note_velocity;
+
 fn find_objcopy() -> Result<PathBuf, Box<dyn Error>> {
     let check = if cfg!(windows) {
         Command::new("where").arg("arm-none-eabi-objcopy").output()

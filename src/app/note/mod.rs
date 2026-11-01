@@ -19,6 +19,9 @@ const MAX_TRANSPOSE: i16 = 12;
 pub struct NoteApp {
     preset: Preset,
     transpose: i16,
+    octave_presses: i8,
+    up_held: bool,
+    down_held: bool,
     choosing: bool,
     // Latch the actual sounding note so releasing a pad cannot turn off a
     // different pitch after a layout or transpose change.
@@ -30,6 +33,9 @@ impl NoteApp {
         Self {
             preset: Preset::Chromatic,
             transpose: 0,
+            octave_presses: 0,
+            up_held: false,
+            down_held: false,
             choosing: false,
             active: [None; 64],
         }
@@ -41,6 +47,36 @@ impl NoteApp {
             if let Some(note) = self.active[slot].take() {
                 if !self.active.contains(&Some(note)) {
                     driver::send_midi(MidiPort::Midi, &[0x90, note, 0]);
+                }
+            }
+        }
+    }
+
+    // All LED decisions for a pitch go through this predicate. A future
+    // receive-MIDI implementation can add its own note state here; local
+    // Note Off must never clear an externally held pitch.
+    fn pitch_lit(&self, note: u8) -> bool {
+        self.active.contains(&Some(note))
+    }
+
+    fn pad_color(&self, note: u8) -> u32 {
+        if self.pitch_lit(note) {
+            if (note as i16 - self.transpose).rem_euclid(12) == 0 {
+                0xffa2ea
+            } else {
+                0x9beaff
+            }
+        } else {
+            base_color(note, self.transpose)
+        }
+    }
+
+    fn refresh_pitch(&self, pitch: u8) {
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                if note_for(self.preset, index, self.transpose) == Some(pitch) {
+                    led::set(index, self.pad_color(pitch));
                 }
             }
         }
@@ -60,20 +96,26 @@ impl NoteApp {
                     }
                 } else {
                     note_for(self.preset, index, self.transpose)
-                        .map_or(0, |note| base_color(note, self.transpose))
+                        .map_or(0, |note| self.pad_color(note))
                 };
                 led::set(index, color);
             }
         }
 
         for (index, step) in [(91, 12), (92, -12), (93, -1), (94, 1)] {
-            led::set_raw(index, if self.choosing || (self.transpose + step).clamp(MIN_TRANSPOSE, MAX_TRANSPOSE) == self.transpose {
+            let disabled = self.choosing || (self.transpose + step).clamp(MIN_TRANSPOSE, MAX_TRANSPOSE) == self.transpose;
+            let color = if !self.choosing && step == 12 && self.octave_presses > 0 {
+                0x40e8ff // one press upwards (maximum is +1 octave)
+            } else if !self.choosing && step == -12 && self.octave_presses < 0 {
+                if self.octave_presses <= -2 { 0x00eaff } else { 0x146778 }
+            } else if disabled {
                 0x102020
             } else if step.abs() == 12 {
-                0x16c6d5
+                0x16434c // neutral octave buttons
             } else {
                 0xc039c2
-            });
+            };
+            led::set_raw(index, color);
         }
         led::set_raw(95, 0x401010); // Hold Session to enter Setup.
         led::set_raw(96, 0xff47ce); // Note mode.
@@ -87,19 +129,44 @@ impl NoteApp {
         }
         self.release_all();
         self.transpose = next;
+        if step == 12 {
+            self.octave_presses = (self.octave_presses + 1).min(1);
+        } else if step == -12 {
+            self.octave_presses = (self.octave_presses - 1).max(-2);
+        }
         self.draw();
+    }
+
+    fn octave_button(&mut self, up: bool, pressed: bool) {
+        let was_held = if up { self.up_held } else { self.down_held };
+        if up { self.up_held = pressed; } else { self.down_held = pressed; }
+        if !pressed || was_held || self.choosing {
+            return;
+        }
+        if self.up_held && self.down_held {
+            self.release_all();
+            self.transpose = 0;
+            self.octave_presses = 0;
+            self.draw();
+        } else {
+            self.set_transpose(if up { 12 } else { -12 });
+        }
     }
 }
 
 impl App for NoteApp {
     fn on_enter(&mut self) {
         self.choosing = false;
+        self.up_held = false;
+        self.down_held = false;
         self.draw();
     }
 
     fn on_exit(&mut self) {
         self.release_all();
         self.choosing = false;
+        self.up_held = false;
+        self.down_held = false;
     }
 
     fn on_surface(&mut self, event: SurfaceEvent) {
@@ -129,26 +196,23 @@ impl App for NoteApp {
             if !already_sounding {
                 driver::send_midi(MidiPort::Midi, &[0x90, note, velocity.max(1)]);
             }
-            led::set(event.index, if (note as i16 - self.transpose).rem_euclid(12) == 0 { 0xffa2ea } else { 0x9beaff });
+            self.refresh_pitch(note);
         } else if let Some(note) = self.active[slot].take() {
             if !self.active.contains(&Some(note)) {
                 driver::send_midi(MidiPort::Midi, &[0x90, note, 0]);
             }
-            led::set(event.index, base_color(note, self.transpose));
+            self.refresh_pitch(note);
         }
     }
 
     fn on_surface_raw(&mut self, event: SurfaceEvent) {
-        if !event.pressed {
-            return;
-        }
         match event.index {
-            91 if !self.choosing => self.set_transpose(12),
-            92 if !self.choosing => self.set_transpose(-12),
-            93 if !self.choosing => self.set_transpose(-1),
-            94 if !self.choosing => self.set_transpose(1),
-            96 if self.choosing => { self.choosing = false; self.draw(); }
-            97 => { self.release_all(); self.choosing = !self.choosing; self.draw(); }
+            91 => self.octave_button(true, event.pressed),
+            92 => self.octave_button(false, event.pressed),
+            93 if event.pressed && !self.choosing => self.set_transpose(-1),
+            94 if event.pressed && !self.choosing => self.set_transpose(1),
+            96 if event.pressed && self.choosing => { self.choosing = false; self.draw(); }
+            97 if event.pressed => { self.release_all(); self.choosing = !self.choosing; self.draw(); }
             _ => {}
         }
     }
