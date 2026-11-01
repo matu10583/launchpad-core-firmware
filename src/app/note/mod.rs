@@ -26,6 +26,9 @@ pub struct NoteApp {
     // Latch the actual sounding note so releasing a pad cannot turn off a
     // different pitch after a layout or transpose change.
     active: [Option<u8>; 64],
+    // External note feedback is separate from local pad state: an incoming
+    // Note Off must not extinguish a pitch still held on the device.
+    external: [bool; 128],
 }
 
 impl NoteApp {
@@ -39,6 +42,7 @@ impl NoteApp {
             right_held: false,
             choosing: false,
             active: [None; 64],
+            external: [false; 128],
         }
     }
 
@@ -53,11 +57,28 @@ impl NoteApp {
         }
     }
 
-    // All LED decisions for a pitch go through this predicate. A future
-    // receive-MIDI implementation can add its own note state here; local
-    // Note Off must never clear an externally held pitch.
+    // Keep local and external feedback independent so either source can
+    // sustain the LED after the other sends a Note Off.
     fn pitch_lit(&self, note: u8) -> bool {
-        self.active.contains(&Some(note))
+        self.active.contains(&Some(note)) || self.external[note as usize]
+    }
+
+    fn update_external(&mut self, event: MidiEvent) -> Option<u8> {
+        if event.port != MidiPort::Midi || event.status & 0x0f != 0 || event.data1 > 127 {
+            return None;
+        }
+
+        let lit = match event.status & 0xf0 {
+            0x90 => event.data2 != 0, // Note On with velocity 0 is Note Off.
+            0x80 => false,
+            _ => return None,
+        };
+        let note = event.data1;
+        if self.external[note as usize] == lit {
+            return None;
+        }
+        self.external[note as usize] = lit;
+        Some(note)
     }
 
     fn pad_color(&self, note: u8) -> u32 {
@@ -160,6 +181,7 @@ impl NoteApp {
 
 impl App for NoteApp {
     fn on_enter(&mut self) {
+        self.external.fill(false);
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
@@ -170,6 +192,7 @@ impl App for NoteApp {
 
     fn on_exit(&mut self) {
         self.release_all();
+        self.external.fill(false);
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
@@ -222,7 +245,11 @@ impl App for NoteApp {
         }
     }
 
-    fn on_midi(&mut self, _event: MidiEvent) {}
+    fn on_midi(&mut self, event: MidiEvent) {
+        if let Some(note) = self.update_external(event) && !self.choosing {
+            self.refresh_pitch(note);
+        }
+    }
 
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
         let Some(note) = grid_slot(event.index).and_then(|slot| self.active[slot]) else { return };
@@ -234,4 +261,50 @@ impl App for NoteApp {
     }
 
     fn on_tick(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn midi(port: MidiPort, status: u8, note: u8, velocity: u8) -> MidiEvent {
+        MidiEvent { port, status, data1: note, data2: velocity }
+    }
+
+    #[test]
+    fn external_note_on_and_both_off_forms_update_feedback() {
+        let mut app = NoteApp::new();
+        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 100)), Some(48));
+        assert!(app.pitch_lit(48));
+        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 0)), Some(48));
+        assert!(!app.pitch_lit(48));
+        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 1)), Some(48));
+        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x80, 48, 64)), Some(48));
+        assert!(!app.pitch_lit(48));
+    }
+
+    #[test]
+    fn local_press_survives_external_note_off() {
+        let mut app = NoteApp::new();
+        app.active[0] = Some(48);
+        app.update_external(midi(MidiPort::Midi, 0x90, 48, 127));
+        app.update_external(midi(MidiPort::Midi, 0x80, 48, 0));
+        assert!(app.pitch_lit(48));
+        app.active[0] = None;
+        assert!(!app.pitch_lit(48));
+    }
+
+    #[test]
+    fn only_channel_one_on_midi_port_changes_note_feedback() {
+        let mut app = NoteApp::new();
+        for event in [
+            midi(MidiPort::Daw, 0x90, 48, 127),
+            midi(MidiPort::Midi, 0x91, 48, 127),
+            midi(MidiPort::Midi, 0xb0, 48, 127),
+            midi(MidiPort::Midi, 0x90, 128, 127),
+        ] {
+            assert_eq!(app.update_external(event), None);
+        }
+        assert!(!app.pitch_lit(48));
+    }
 }
