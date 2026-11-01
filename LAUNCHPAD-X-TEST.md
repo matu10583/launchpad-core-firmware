@@ -16,7 +16,9 @@ workflow は専用ブランチへの push と `workflow_dispatch` に対応す�
 
 上流 readme のロードマップには Note Mode、Chord Mode、Components 経由の Custom Modes が残っている。したがって純正の音階配置や機能が維持されるとは想定しない。比較には CoreFW の **Performance Mode** を使い、PC 側で MIDI 音源（チャンネル1）と MIDI モニターを接続する。コード上の経路は X の ADC/DMA → 3点中央値 → 正規化（raw ≤150 は0）→ 上昇時 1/2・下降時 1/8 のフィルタ → 無押下時の基準値追従 → `delta` の押下・解放ヒステリシス → `GridEvent` → `SurfaceEvent` → `PerformanceApp::on_surface` → `xy_to_dr` → MIDI `0x90, note, velocity`。解放は `0x90, note, 0`（Note On velocity 0 = Note Off 相当）であり、必ずしも `0x80` として表示されない。LED は受信 MIDI やモードの影響も受けるため LED だけで Note Off と断定しない。
 
-内部の座標は左上の8×8パッドが `11`、右下が `88`。`src/utils/layout.rs` の Performance Mode の対応例は左上 `11` → MIDI note **36**、その右 `12` → **37**、右下 `88` → **99**。これは純正 Note Mode の音階ではない。音源・MIDIポート・チャンネル・ベロシティ設定を揃えて比較する。
+内部の座標は左下の8×8パッドが `11`、右上が `88`。`src/utils/layout.rs` の Performance Mode の対応例は左下 `11` → MIDI note **36**、その右 `12` → **37**、右上 `88` → **99**。これは純正 Note Mode の音階ではない。音源・MIDIポート・チャンネル・ベロシティ設定を揃えて比較する。
+
+LED確認版 `launchpad-x-led-feedback` は **baselineと同じ内部感度値**（開始300、解放144）で、Performance Modeの押下を受け付けたパッドを緑に点灯し、解放判定時に消灯する。音・MIDI送信処理は変えず、純正のNote Modeも追加しない。点灯は内部押下状態の表示であり、PCへのMIDI到達を保証しない。PCから同じパッドへLED用MIDIを送ると表示が上書きされ得るため、まずホスト側のLED送信を止めて確認する。点灯がない場合でも入力経路や明るさなど原因は確定しないので、可能ならMIDIログと併せて判断する。
 
 ## 変更対象と判定の限界
 

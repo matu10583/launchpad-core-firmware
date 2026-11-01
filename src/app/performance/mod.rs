@@ -53,6 +53,9 @@ impl App for PerformanceApp {
         });
 
         driver::send_midi(MidiPort::Midi, &[0x90, note, velocity]);
+        // Local feedback: show the pad while the firmware considers it pressed.
+        // This does not depend on a host echoing the MIDI message back to us.
+        led::set(index, if event.pressed { 0x00ff00 } else { 0 });
     }
 
     fn on_midi(&mut self, event: MidiEvent) {
