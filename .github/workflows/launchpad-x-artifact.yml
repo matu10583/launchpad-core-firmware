@@ -8,6 +8,7 @@ on:
       - launchpad-x-led-feedback
       - launchpad-x-hold-80-led
       - launchpad-x-hold-48-led
+      - launchpad-x-hold-8-led
   workflow_dispatch:
 
 permissions:
@@ -19,7 +20,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback' || github.ref == 'refs/heads/launchpad-x-hold-80-led' || github.ref == 'refs/heads/launchpad-x-hold-48-led'
+    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback' || github.ref == 'refs/heads/launchpad-x-hold-80-led' || github.ref == 'refs/heads/launchpad-x-hold-48-led' || github.ref == 'refs/heads/launchpad-x-hold-8-led'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -60,7 +61,7 @@ jobs:
           branch = os.environ['REF_NAME']
           expected = {'launchpad-x-baseline': 144, 'launchpad-x-hold-low': 112,
                       'launchpad-x-led-feedback': 144, 'launchpad-x-hold-80-led': 80,
-                      'launchpad-x-hold-48-led': 48}
+                      'launchpad-x-hold-48-led': 48, 'launchpad-x-hold-8-led': 8}
           if branch not in expected:
               raise SystemExit(f'Unexpected branch: {branch}')
           text = pathlib.Path('src/sys/driver/launchpad-x/inputs.rs').read_text()
@@ -72,7 +73,7 @@ jobs:
           start, release = constant('LP_PRESS_START_NORM'), constant('LP_PRESS_RELEASE_NORM')
           if start != 300 or release != expected[branch]:
               raise SystemExit(f'Unexpected thresholds: start={start}, release={release}')
-          led_enabled = branch in ('launchpad-x-led-feedback', 'launchpad-x-hold-80-led', 'launchpad-x-hold-48-led')
+          led_enabled = branch in ('launchpad-x-led-feedback', 'launchpad-x-hold-80-led', 'launchpad-x-hold-48-led', 'launchpad-x-hold-8-led')
           if led_enabled:
               feedback = pathlib.Path('src/app/performance/mod.rs').read_text()
               if 'led::set(index, if event.pressed { 0x00ff00 } else { 0 });' not in feedback:
@@ -100,7 +101,8 @@ jobs:
                    'launchpad-x-hold-low': '実験版（保持感度の試作）',
                    'launchpad-x-led-feedback': 'LED確認版（baselineの感度値、押下中だけ緑に点灯）',
                    'launchpad-x-hold-80-led': '保持感度の追加試作（LED点灯、解放80）',
-                   'launchpad-x-hold-48-led': '保持感度の追加試作（LED点灯、解放48）'}
+                   'launchpad-x-hold-48-led': '保持感度の追加試作（LED点灯、解放48）',
+                   'launchpad-x-hold-8-led': '極端な保持感度の試作（LED点灯、解放8、鳴りっぱなし注意）'}
           kind = kinds[branch]
           (stage / '説明.txt').write_text(
               f'対象: Novation Launchpad X（Pro / Pro MK3 ではありません）\n'

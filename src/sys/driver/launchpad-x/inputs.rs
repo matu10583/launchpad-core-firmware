@@ -36,7 +36,7 @@ const LP_PRESS_START_NORM: u16 = 300;
 ///
 /// Using a lower release threshold than start threshold creates hysteresis,
 /// preventing rapid note flickering when a pad is lightly held.
-const LP_PRESS_RELEASE_NORM: u16 = 48;
+const LP_PRESS_RELEASE_NORM: u16 = 8;
 
 /// Debounce sample counter required before confirming a press.
 const LP_PRESS_ON_COUNT: u8 = 1;
