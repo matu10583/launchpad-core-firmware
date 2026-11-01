@@ -586,6 +586,10 @@ fn package(
     if release {
         cargo_args.push("--release");
     }
+    // The outer cargo run does not propagate --locked to this child cargo build.
+    if env::var_os("CORE_FW_CARGO_LOCKED").is_some() {
+        cargo_args.push("--locked");
+    }
     run("cargo", &cargo_args, repo)?;
 
     let elf = repo
