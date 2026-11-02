@@ -1,6 +1,6 @@
 # PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X / Pro MK3 練習ガイド試作
 
-**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、`src/app/guide.rs` のManufacturer IDを置換して仕様/版/アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**旧X専用コミットではホストテスト・X向けコンパイル確認に成功（下記参照）。共通化後は別途検証が必要。実機検証は未実施。**
+**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、`src/app/guide.rs` のビルド時ID指定を適切に変更して仕様/版/アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**共通化後の両機種についてホストテスト・コンパイル・ローカルreleaseビルド成功（下記参照）。実機検証は未実施。**
 
 ## 受信先とバイト配置（**この私用試作内のみ**）
 
@@ -39,4 +39,10 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 
 ユーザー報告による検証：NASにキャッシュ済みの`rust:slim`コンテナへFWソースを**読み取り専用**でマウントし、**Rust 1.96.1**で`cargo test --locked -p xtask`を実行して**13件すべて成功**。`cargo check --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`も成功。コンテナは終了し、公開forkへのpush・公開CI/Artifact・実機書き込みは行っていない。こちらのセッションでは実行ログを直接照合していない。
 
-この結果は**X専用の旧コミット`96568a1`時点**のホストテストとターゲット向け`cargo check`の確認であり、共通化後のFW全体の成功を意味しない。共通モジュール単体は読み取り専用ソース・ネットワークなしの`rust:slim`（Rust 1.96.1）で`rustc --edition=2024 --test src/app/guide.rs`をID未指定/ローカルID指定の双方で実行し、各5件成功。FW全体のCargoテスト・両機種のターゲットチェックはコンテナにCargo依存キャッシュとARMターゲットがなく、オフラインでは実施できなかった。**リポジトリのActions指定Rust 1.94.1とはバージョンが異なる**。リリース用ビルド、USBの実機動作、音声・LEDの動作は未検証。`src/app/note/mod.rs`の`#[cfg(test)]`は`Cargo.toml`で`test=false`のため、上記の単体テストでは実行されない。
+上記のユーザー報告は**X専用の旧コミット`96568a1`時点**の結果。共通化後のローカル検証では`rust:1.94.1-slim`を基に、指定と同じ**Rust 1.94.1**・`thumbv7em-none-eabihf`・`rust-src`・`llvm-tools`を入れたDockerイメージ`corefw-build:1.94.1`を作成した。Cargo依存のキャッシュはローカルDocker volume `corefw-cargo-registry`。初回だけ依存を取得し、以降はソースの**読み取り専用**マウント、キャッシュ参照、ネットワーク無効のコンテナで次を実行して成功した。
+
+- `cargo test --locked -p xtask`: **15件成功**（共通ガイド5件を含む）。
+- `cargo check --offline --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`と`--features launchpad-pro-mk3`: ID未指定・個人用ID指定の**両方で成功**。
+- `cargo build --offline --locked --release --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`と`--features launchpad-pro-mk3`: 個人用ID指定で**両方成功**。生成物は使い捨てコンテナの`/tmp/target`にのみ置き、終了時に破棄した。公開CI/Artifactへの掲載・実機書き込みはしていない。
+
+再検証時はこのローカルイメージとvolumeを再利用できる。Dockerがホスト側で動く環境ではマウント元はNASホストの`/home/matu10583/docker-apps/opencode/workspace/projects/corefw-x-pro-mk3-integration`（コンテナ内の`/workspace/projects/...`ではない）。ツールチェーンの自動同期を避けるため`RUSTUP_TOOLCHAIN=1.94.1-x86_64-unknown-linux-gnu`を指定する。個人用ビルド以外は`CORE_GUIDE_SYSEX_ID`を指定しない。いずれも**実機USB・LED・演奏動作の確認ではない**。`src/app/note/mod.rs`等の`#[cfg(test)]`は`Cargo.toml`で`test=false`のため`xtask`テストでは実行されない。
