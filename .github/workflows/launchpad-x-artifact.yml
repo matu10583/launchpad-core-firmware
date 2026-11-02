@@ -7,6 +7,7 @@ on:
       - launchpad-x-hold-low
       - launchpad-x-led-feedback
       - launchpad-x-hold-80-led
+      - launchpad-x-press-180-led
       - launchpad-x-hold-48-led
       - launchpad-x-hold-8-led
       - launchpad-x-press-112-hold-8-led
@@ -24,7 +25,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback' || github.ref == 'refs/heads/launchpad-x-hold-80-led' || github.ref == 'refs/heads/launchpad-x-hold-48-led' || github.ref == 'refs/heads/launchpad-x-hold-8-led' || github.ref == 'refs/heads/launchpad-x-press-112-hold-8-led' || github.ref == 'refs/heads/launchpad-x-note-mode' || github.ref == 'refs/heads/launchpad-x-note-mode-v2' || github.ref == 'refs/heads/launchpad-x-note-mode-v3'
+    if: github.ref == 'refs/heads/launchpad-x-baseline' || github.ref == 'refs/heads/launchpad-x-hold-low' || github.ref == 'refs/heads/launchpad-x-led-feedback' || github.ref == 'refs/heads/launchpad-x-hold-80-led' || github.ref == 'refs/heads/launchpad-x-press-180-led' || github.ref == 'refs/heads/launchpad-x-hold-48-led' || github.ref == 'refs/heads/launchpad-x-hold-8-led' || github.ref == 'refs/heads/launchpad-x-press-112-hold-8-led' || github.ref == 'refs/heads/launchpad-x-note-mode' || github.ref == 'refs/heads/launchpad-x-note-mode-v2' || github.ref == 'refs/heads/launchpad-x-note-mode-v3'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -65,9 +66,10 @@ jobs:
           branch = os.environ['REF_NAME']
           expected = {'launchpad-x-baseline': (300, 144), 'launchpad-x-hold-low': (300, 112),
                       'launchpad-x-led-feedback': (300, 144), 'launchpad-x-hold-80-led': (300, 80),
-                      'launchpad-x-hold-48-led': (300, 48), 'launchpad-x-hold-8-led': (300, 8),
-                      'launchpad-x-press-112-hold-8-led': (112, 8), 'launchpad-x-note-mode': (112, 8),
-                      'launchpad-x-note-mode-v2': (112, 8), 'launchpad-x-note-mode-v3': (112, 8)}
+                      'launchpad-x-press-180-led': (180, 80), 'launchpad-x-hold-48-led': (300, 48),
+                      'launchpad-x-hold-8-led': (300, 8), 'launchpad-x-press-112-hold-8-led': (112, 8),
+                      'launchpad-x-note-mode': (112, 8), 'launchpad-x-note-mode-v2': (112, 8),
+                      'launchpad-x-note-mode-v3': (112, 8)}
           if branch not in expected:
               raise SystemExit(f'Unexpected branch: {branch}')
           text = pathlib.Path('src/sys/driver/launchpad-x/inputs.rs').read_text()
@@ -79,7 +81,7 @@ jobs:
           start, release = constant('LP_PRESS_START_NORM'), constant('LP_PRESS_RELEASE_NORM')
           if (start, release) != expected[branch]:
               raise SystemExit(f'Unexpected thresholds: start={start}, release={release}')
-          if branch in ('launchpad-x-press-112-hold-8-led', 'launchpad-x-note-mode'):
+          if branch in ('launchpad-x-press-180-led', 'launchpad-x-press-112-hold-8-led', 'launchpad-x-note-mode'):
               if constant('LP_VELOCITY_START_NORM') != 300:
                   raise SystemExit('Velocity curve anchor must remain 300')
               curve = text.split('fn norm_to_velocity(norm: u16)', 1)[1].split('fn norm_to_aftertouch', 1)[0]
@@ -91,7 +93,7 @@ jobs:
               curve = text.split('fn norm_to_velocity(norm: u16)', 1)[1].split('fn norm_to_aftertouch', 1)[0]
               if 'velocity::map(norm, LP_VELOCITY_START_NORM)' not in curve:
                   raise SystemExit('Note Mode v2 velocity mapping not used')
-          led_enabled = branch in ('launchpad-x-led-feedback', 'launchpad-x-hold-80-led', 'launchpad-x-hold-48-led', 'launchpad-x-hold-8-led', 'launchpad-x-press-112-hold-8-led')
+          led_enabled = branch in ('launchpad-x-led-feedback', 'launchpad-x-hold-80-led', 'launchpad-x-press-180-led', 'launchpad-x-hold-48-led', 'launchpad-x-hold-8-led', 'launchpad-x-press-112-hold-8-led')
           if led_enabled:
               feedback = pathlib.Path('src/app/performance/mod.rs').read_text()
               if 'led::set(index, if event.pressed { 0x00ff00 } else { 0 });' not in feedback:
@@ -128,6 +130,7 @@ jobs:
                    'launchpad-x-hold-low': '実験版（保持感度の試作）',
                    'launchpad-x-led-feedback': 'LED確認版（baselineの感度値、押下中だけ緑に点灯）',
                    'launchpad-x-hold-80-led': '保持感度の追加試作（LED点灯、解放80）',
+                   'launchpad-x-press-180-led': '押下開始の追加試作（LED点灯、開始180、解放80）',
                    'launchpad-x-hold-48-led': '保持感度の追加試作（LED点灯、解放48）',
                    'launchpad-x-hold-8-led': '極端な保持感度の試作（LED点灯、解放8、鳴りっぱなし注意）',
                    'launchpad-x-press-112-hold-8-led': '軽い押下の試作（LED点灯、開始112、解放8）',
@@ -143,7 +146,7 @@ jobs:
               f'対象: Novation Launchpad X（Pro / Pro MK3 ではありません）\n'
               f'種別: {kind}\nソースSHA: {os.environ["SOURCE_SHA"]}\n'
               'ツールチェーン: Rust 1.94.1 / thumbv7em-none-eabihf / rust-src / llvm-tools; GitHub ubuntu-24.04\n'
-              f'CoreFW内部値: LP_PRESS_START_NORM={start}, LP_PRESS_RELEASE_NORM={release}; ベロシティ計算の基準={constant("LP_VELOCITY_START_NORM") if branch in ("launchpad-x-press-112-hold-8-led", "launchpad-x-note-mode", "launchpad-x-note-mode-v2", "launchpad-x-note-mode-v3") else 300}\n'
+              f'CoreFW内部値: LP_PRESS_START_NORM={start}, LP_PRESS_RELEASE_NORM={release}; ベロシティ計算の基準={constant("LP_VELOCITY_START_NORM") if branch in ("launchpad-x-press-180-led", "launchpad-x-press-112-hold-8-led", "launchpad-x-note-mode", "launchpad-x-note-mode-v2", "launchpad-x-note-mode-v3") else 300}\n'
               f'LED: {led_description}\n'
               '実機未検証。純正ファームウェアの設定値・動作を示すものではありません。\n'
           )
