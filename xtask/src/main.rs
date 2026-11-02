@@ -42,14 +42,16 @@ mod driver;
 
 #[cfg(test)]
 mod private_guide_mapping_tests {
-    use super::{note_guide::Guide, note_layout::{note_for, Preset}};
+    use super::{note_guide::{self, Guide}, note_layout::{note_for, Preset}};
 
     fn mapped(guide: &Guide, preset: Preset, transpose: i16) -> Vec<(u8, u8)> {
         let mut result = Vec::new();
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                if let Some(color) = guide.pad_color(index, note_for(preset, index, transpose), false) {
+                if let Some(color) = guide.pad_color(index, note_for(preset, index, transpose), false,
+                    |side, pitch| note_guide::side_has_pitch(side, pitch,
+                        |pad| note_for(preset, pad, transpose))) {
                     result.push((index, color));
                 }
             }

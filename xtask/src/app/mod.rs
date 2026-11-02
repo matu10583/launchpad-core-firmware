@@ -15,3 +15,7 @@ pub mod performance {
 
 #[path = "../../../src/app/note/mod.rs"]
 pub mod note;
+#[path = "../../../src/app/pro_note/mod.rs"]
+pub mod pro_note;
+#[path = "../../../src/app/custom_note/mod.rs"]
+pub mod custom_note;

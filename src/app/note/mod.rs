@@ -139,6 +139,8 @@ impl NoteApp {
             index,
             note_for(self.preset, index, self.transpose.total()),
             self.active[slot].is_some(),
+            |side, pitch| guide::side_has_pitch(side, pitch,
+                |pad| note_for(self.preset, pad, self.transpose.total())),
         ) {
             return PadColor::Novation(color);
         }
@@ -415,5 +417,30 @@ mod tests {
         app.on_exit();
         assert!(!app.guide.active());
         assert_ne!(app.grid_color(41), PadColor::Novation(21));
+    }
+
+    #[test]
+    fn fallback_tracks_live_layout_and_resolves_collisions() {
+        let mut app = NoteApp::new();
+        app.guide.begin();
+        app.guide.set(0, 1, 48, 21); // pitch 48 only exists on the left
+        assert_eq!(app.grid_color(11), PadColor::Novation(21));
+        app.active[0] = Some(48);
+        assert_eq!(app.grid_color(11), PadColor::Rgb(0xffa2ea));
+        app.guide.set(1, 1, 48, 31);
+        assert_eq!(app.grid_color(11), PadColor::Novation(31));
+        app.active[0] = None;
+        app.guide.set(1, 1, 48, 0);
+        app.guide.set(0, 1, 48, 0);
+        app.guide.set(0, 0, 72, 13);
+        assert_eq!(app.grid_color(71), PadColor::Novation(13));
+        assert_ne!(app.grid_color(15), PadColor::Novation(13)); // 72 also on left
+        app.guide.set(1, 1, 72, 31);
+        assert_eq!(app.grid_color(15), PadColor::Novation(31));
+        app.guide.set(1, 1, 72, 0);
+        app.transpose = app.transpose.shifted(12).unwrap();
+        assert_eq!(app.grid_color(41), PadColor::Novation(13)); // left pitch 72 follows transpose
+        app.guide.end();
+        assert_ne!(app.grid_color(41), PadColor::Novation(13));
     }
 }
