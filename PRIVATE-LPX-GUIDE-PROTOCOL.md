@@ -1,6 +1,6 @@
 # PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X 練習ガイド試作
 
-**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、`src/app/note/guide.rs` のManufacturer IDを置換して仕様/版/アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。現時点でローカルコンパイル・実機検証は未実施。
+**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、`src/app/note/guide.rs` のManufacturer IDを置換して仕様/版/アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**ホストテスト・X向けコンパイル確認は私用コンテナで成功（下記参照）。実機検証は未実施。**
 
 ## 受信先とバイト配置（**この私用試作内のみ**）
 
@@ -31,4 +31,6 @@ F0 7D 43 46 57 0C 01 cmd [payload] F7
 
 ## 検証の限界
 
-純粋なフレームデコード・状態・左右別配置のホストテストは`xtask`に追加しているが、ローカルにRustツールチェーンがなく、公開CIにも送れないため未実行。音声・USBの実機動作も未検証。私用オフライン環境でRust 1.94.1、`thumbv7em-none-eabihf`、`rust-src`、`llvm-tools`を用意してから、公開リモートへ送らずに`cargo test --locked -p xtask`、`cargo check --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`で確認する。`src/app/note/mod.rs`の`#[cfg(test)]`は`Cargo.toml`で`test=false`のためこのコマンドでは実行されない。
+ユーザー報告による検証：NASにキャッシュ済みの`rust:slim`コンテナへFWソースを**読み取り専用**でマウントし、**Rust 1.96.1**で`cargo test --locked -p xtask`を実行して**13件すべて成功**。`cargo check --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`も成功。コンテナは終了し、公開forkへのpush・公開CI/Artifact・実機書き込みは行っていない。こちらのセッションでは実行ログを直接照合していない。
+
+この結果はホストテストとターゲット向け`cargo check`の確認であり、**リポジトリのActions指定Rust 1.94.1とはバージョンが異なる**。リリース用ビルド、USBの実機動作、音声・LEDの動作は未検証。`src/app/note/mod.rs`の`#[cfg(test)]`は`Cargo.toml`で`test=false`のため、上記`xtask`テストでは実行されない。公開リモートを使わずにRust 1.94.1でも再確認することが残課題。
