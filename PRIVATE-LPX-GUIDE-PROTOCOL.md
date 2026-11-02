@@ -1,6 +1,6 @@
 # PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X / Pro MK3 練習ガイド試作
 
-**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、ソース・仕様・アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**実機検証は未実施。**
+**個人利用・非公開FW向けの試作仕様。FW生成物を公開GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ユーザーの指定により、ソースには私用IDの値を固定せず、TeamCityのビルド手順でのみ渡す。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来FWを公開する場合は、利用権のあるSysEx IDを取得し、ソース・仕様・アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**実機検証は未実施。**
 
 ## 受信先とバイト配置（**この私用試作内のみ**）
 
@@ -14,7 +14,7 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 
 `model=0C`はX、`0E`はPro MK3。機種の不一致は拒否。`src/app/guide.rs`で共通のパーサ・期限・左右別状態を管理し、各モードは自分の配列と移調を用いて描画する。Webは機種名判定やQUERYを前提にせず、時間再生では両モデルへコマンドを送信する。他機種宛のフレームはFWが無視し、待機モードのみGET_LAYOUT応答を使う（Webの実装は今回変更しない）。
 
-**私用ローカル既定:** このブランチでは`src/app/guide.rs`に`0x7D`を固定する。`CORE_GUIDE_SYSEX_ID`の指定は不要で、指定しても値の切替には使用しない。`GITHUB_ACTIONS`下でのビルドは拒否するが、公開pushそのものは防げないため**この履歴を公開forkへpushしない**。公開でソースを管理するなら公開`code`を起点に、私用ID・文書・生成物を含めない新しい履歴で行う。
+**ビルド時ID:** `src/app/guide.rs`には私用IDの値を固定せず、`CORE_GUIDE_SYSEX_ID`未指定ならガイドSysEx受信・応答を無効にする。私用FWのビルド時だけ2桁の16進IDを環境変数として指定する。`GITHUB_ACTIONS`下でID指定ビルドは拒否。TeamCityのビルド構成には環境パラメータとして指定し、ソース・スクリプト・ログに値を書かない。TeamCityの配布範囲とArtifactへのアクセス権を別途確認する。
 
 | `cmd` | 送信payload | 動作 / 返答 |
 | --- | --- | --- |
@@ -45,8 +45,10 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 - `cargo check --offline --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`と`--features launchpad-pro-mk3`: ID未指定・個人用ID指定の**両方で成功**。
 - `cargo build --offline --locked --release --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`と`--features launchpad-pro-mk3`: 個人用ID指定で**両方成功**。生成物は使い捨てコンテナの`/tmp/target`にのみ置き、終了時に破棄した。公開CI/Artifactへの掲載・実機書き込みはしていない。
 
-再検証時はこのローカルイメージとvolumeを再利用できる。Dockerがホスト側で動く環境ではマウント元はNASホストの`/home/matu10583/docker-apps/opencode/workspace/projects/corefw-x-pro-mk3-integration`（コンテナ内の`/workspace/projects/...`ではない）。ツールチェーンの自動同期を避けるため`RUSTUP_TOOLCHAIN=1.94.1-x86_64-unknown-linux-gnu`を指定する。**以下は過去の実装時点の記録**であり、現行版では私用IDを常に有効にしている。いずれも**実機USB・LED・演奏動作の確認ではない**。
+再検証時はこのローカルイメージとvolumeを再利用できる。Dockerがホスト側で動く環境ではマウント元はNASホストの`/home/matu10583/docker-apps/opencode/workspace/projects/corefw-x-pro-mk3-integration`（コンテナ内の`/workspace/projects/...`ではない）。ツールチェーンの自動同期を避けるため`RUSTUP_TOOLCHAIN=1.94.1-x86_64-unknown-linux-gnu`を指定する。**以下は過去の実装時点の記録**であり、現行版ではビルド時指定がないとガイドは無効。いずれも**実機USB・LED・演奏動作の確認ではない**。
 
 **旧コミット`7d3b3a4`時点のX旧LED入力廃止の検証:** `xtask`にホスト用の軽量ドライバを追加し、FW本体の`test=false`でもX NoteAppの実コードのテストを実行可能にした。Rust 1.94.1で`cargo test --offline --locked -p xtask`はID未指定/個人用ID指定の双方で**25件成功**。両機種の個人用ID指定`cargo check --offline --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x` / `launchpad-pro-mk3`も成功。現行版は下記の検証結果を参照する。
 
-**現行の私用変更:** Rust 1.94.1のローカルDocker（ネットワークなし・FWソース読み取り専用）で、`CORE_GUIDE_SYSEX_ID`未指定の`cargo test --offline --locked -p xtask` **37件成功**。X Note／Pro Note／Pro固定Customの実コードで旧LED入力の無視、選択チャンネルでの演奏MIDI維持、左右フォールバック・移調／配列追従・heldと色優先、機種model／版／長さの拒否を確認。両機種とも環境変数未指定で`cargo check --offline --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`および`--features launchpad-pro-mk3`成功。`GITHUB_ACTIONS=true`のホストテストコンパイルは私用ビルド拒否の期待どおり失敗。これらは実機のLED・MIDI動作の検証ではない。既存の`build/`内の生成物は**この変更を含まない旧FW**なので新仕様として扱わない。
+**旧コミット`e8d1b82`時点の検証:** Rust 1.94.1のローカルDockerで、ID未指定の`xtask`ホストテスト**37件成功**、両機種のFW `cargo check`成功。旧コミットはID固定だったため、現行版のID有効化・無効化の検証結果には使わない。既存の`build/`内の生成物は**この変更を含まない旧FW**なので新仕様として扱わない。
+
+**ビルド時指定への移行:** FWソースからIDの固定値を削除。Rust 1.94.1のローカルDockerでID未指定の`xtask`ホストテスト37件成功、XのID未指定`cargo check`とPro MK3のID指定`cargo check`成功。TeamCityのX／Proの登録済みビルド手順にのみIDを指定した（両構成は引き続き停止中・ビルド未実施）。`code`へのpushでGitHub ActionsのFW Artifactが自動生成されないよう`x-pro-mk3-check.yml`のpush対象から`code`を削除。旧コミットにIDが残ることはユーザー了承済み。実機書き込み・新FW生成は未実施。

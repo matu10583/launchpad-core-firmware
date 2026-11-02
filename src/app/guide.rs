@@ -1,9 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// PRIVATE firmware only: never push this branch or its binaries to the public fork.
-const MANUFACTURER_ID: u8 = 0x7d;
-// Fail closed if this private code is accidentally built by GitHub Actions;
-// this does not make publishing the source safe, so keep the branch local.
-const _: () = assert!(option_env!("GITHUB_ACTIONS").is_none(), "Private guide cannot run in public CI");
+// Only a deliberately configured build may enable this optional SysEx protocol.
+// Do not set this ID in public CI or publish a build containing a private ID.
+const fn hex_digit(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'A'..=b'F' => b - b'A' + 10,
+        b'a'..=b'f' => b - b'a' + 10,
+        _ => panic!("CORE_GUIDE_SYSEX_ID must be two hexadecimal digits"),
+    }
+}
+const fn configured_id() -> Option<u8> {
+    match option_env!("CORE_GUIDE_SYSEX_ID") {
+        None => None,
+        Some(value) => {
+            let bytes = value.as_bytes();
+            if bytes.len() != 2 { panic!("CORE_GUIDE_SYSEX_ID must be two hexadecimal digits"); }
+            let id = hex_digit(bytes[0]) * 16 + hex_digit(bytes[1]);
+            if id == 0 || id >= 0x80 { panic!("CORE_GUIDE_SYSEX_ID must be a one-byte SysEx ID"); }
+            Some(id)
+        }
+    }
+}
+// Public GitHub Actions builds must never embed an explicitly supplied ID.
+const _: () = assert!(option_env!("GITHUB_ACTIONS").is_none() ||
+                      option_env!("CORE_GUIDE_SYSEX_ID").is_none(),
+                      "Configured guide ID cannot run in public CI");
+#[cfg(not(test))]
+const MANUFACTURER_ID: Option<u8> = configured_id();
+// Host tests exercise framing even when the default firmware build disables it.
+#[cfg(test)]
+const MANUFACTURER_ID: Option<u8> = match configured_id() { Some(id) => Some(id), None => Some(1) };
 const HEADER: [u8; 3] = [b'C', b'F', b'W'];
 pub const MODEL_X: u8 = 0x0c;
 pub const MODEL_PRO_MK3: u8 = 0x0e;
@@ -21,10 +47,11 @@ pub enum Command {
 }
 
 pub fn decode(data: &[u8], model: u8) -> Option<Command> {
+    let id = MANUFACTURER_ID?;
     if !matches!(model, MODEL_X | MODEL_PRO_MK3) { return None; }
     let start = 2 + HEADER.len() + 2;
     if data.len() < start + 2 || data.first() != Some(&0xf0)
-        || data.get(1) != Some(&MANUFACTURER_ID)
+        || data.get(1) != Some(&id)
         || !data[2..].starts_with(&HEADER)
         || data.get(start - 2) != Some(&model)
         || data.get(start - 1) != Some(&VERSION)
@@ -47,12 +74,13 @@ pub fn decode(data: &[u8], model: u8) -> Option<Command> {
 }
 
 pub fn reply(payload: &[u8], model: u8, out: &mut [u8]) -> Option<usize> {
+    let id = MANUFACTURER_ID?;
     if !matches!(model, MODEL_X | MODEL_PRO_MK3) { return None; }
     let start = 2 + HEADER.len() + 2;
     let len = start + payload.len() + 1;
     if out.len() < len || payload.iter().any(|&b| b > 127) { return None; }
     out[0] = 0xf0;
-    out[1] = MANUFACTURER_ID;
+    out[1] = id;
     let header_start = 2;
     out[header_start..header_start + HEADER.len()].copy_from_slice(&HEADER);
     out[start - 2] = model;
@@ -170,7 +198,7 @@ mod tests {
 
     #[test]
     fn strict_envelope_and_command_validation() {
-        let set = [0xf0, MANUFACTURER_ID, 67, 70, 87, 12, 1, 0x20, 1, 2, 127, 127, 0xf7];
+        let set = [0xf0, MANUFACTURER_ID.unwrap(), 67, 70, 87, 12, 1, 0x20, 1, 2, 127, 127, 0xf7];
         assert_eq!(decode(&set, MODEL_X), Some(Command::Set { layer: 1, side: 2, pitch: 127, color: 127 }));
         let mut pro = set;
         pro[5] = MODEL_PRO_MK3;
@@ -245,7 +273,7 @@ mod tests {
         assert_eq!(payload[80], 72);
         let mut frame = [0u8; 96];
         assert_eq!(reply(&payload, MODEL_PRO_MK3, &mut frame), Some(89));
-        assert_eq!(&frame[..8], &[0xf0, MANUFACTURER_ID, b'C', b'F', b'W', 0x0e, 1, 0x42]);
+        assert_eq!(&frame[..8], &[0xf0, MANUFACTURER_ID.unwrap(), b'C', b'F', b'W', 0x0e, 1, 0x42]);
         assert_eq!(frame[88], 0xf7);
         assert!(reply(&payload, MODEL_X, &mut [0; 88]).is_none());
     }

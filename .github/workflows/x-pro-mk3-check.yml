@@ -2,8 +2,7 @@ name: Launchpad X and Pro Mk3 firmware check
 
 on:
   push:
-    branches: [integrate-x-pro-mk3, code]
-  workflow_dispatch:
+    branches: [integrate-x-pro-mk3]
 
 permissions:
   contents: read
