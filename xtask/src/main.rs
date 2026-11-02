@@ -26,7 +26,19 @@ mod note_transpose;
 // The private guide's envelope and session state are pure and host-testable.
 #[cfg(test)]
 #[path = "../../src/app/guide.rs"]
-mod note_guide;
+pub mod note_guide;
+
+// Compile and run the actual Note-mode App tests with lightweight host drivers.
+// The firmware library disables its own test target on non-ARM hosts.
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod app;
+#[cfg(test)]
+#[allow(dead_code)]
+mod sys;
+#[cfg(test)]
+#[allow(dead_code)]
+mod driver;
 
 #[cfg(test)]
 mod private_guide_mapping_tests {

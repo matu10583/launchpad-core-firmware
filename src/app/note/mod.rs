@@ -33,14 +33,6 @@ pub struct NoteApp {
     // Latch the actual sounding note so releasing a pad cannot turn off a
     // different pitch after a layout or transpose change.
     active: [Option<u8>; 64],
-    // External note feedback is separate from local pad state: an incoming
-    // Note Off must not extinguish a pitch still held on the device.
-    external: [bool; 128],
-    preview: [u8; 128],
-    current: [u8; 128],
-    // Physical grid overlays (ch4/ch5), independent of overlapping pitches.
-    pad_preview: [u8; 64],
-    pad_current: [u8; 64],
     guide: Guide,
 }
 
@@ -55,11 +47,6 @@ impl NoteApp {
             right_held: false,
             choosing: false,
             active: [None; 64],
-            external: [false; 128],
-            preview: [0; 128],
-            current: [0; 128],
-            pad_preview: [0; 64],
-            pad_current: [0; 64],
             guide: Guide::new(),
         }
     }
@@ -73,76 +60,6 @@ impl NoteApp {
                 }
             }
         }
-    }
-
-    fn update_external(&mut self, event: MidiEvent) -> Option<u8> {
-        if event.port != MidiPort::Midi || event.data1 > 127 || event.data2 > 127 {
-            return None;
-        }
-
-        let value = match event.status & 0xf0 {
-            0x90 => event.data2, // Note On with velocity 0 is Note Off.
-            0x80 => 0,
-            _ => return None,
-        };
-        let note = event.data1;
-        let channel = event.status & 0x0f;
-        match channel {
-            0 => {
-                let lit = value != 0;
-                if self.external[note as usize] == lit {
-                    return None;
-                }
-                self.external[note as usize] = lit;
-            }
-            1 | 2 => {
-                let layer = if channel == 1 {
-                    &mut self.preview
-                } else {
-                    &mut self.current
-                };
-                if layer[note as usize] == value {
-                    return None;
-                }
-                layer[note as usize] = value;
-            }
-            _ => return None,
-        }
-        Some(note)
-    }
-
-    fn update_pad_feedback(&mut self, event: MidiEvent) -> Option<u8> {
-        if event.port != MidiPort::Midi || event.data2 > 127 {
-            return None;
-        }
-        let slot = grid_slot(event.data1)?;
-        let value = match event.status & 0xf0 {
-            0x90 => event.data2,
-            0x80 => 0,
-            _ => return None,
-        };
-        let layer = match event.status & 0x0f {
-            3 => &mut self.pad_preview,
-            4 => &mut self.pad_current,
-            _ => return None,
-        };
-        if layer[slot] == value {
-            return None;
-        }
-        layer[slot] = value;
-        Some(event.data1)
-    }
-
-    fn clear_pad_feedback(&mut self) {
-        self.pad_preview.fill(0);
-        self.pad_current.fill(0);
-    }
-
-    fn clear_legacy_feedback(&mut self) {
-        self.external.fill(false);
-        self.preview.fill(0);
-        self.current.fill(0);
-        self.clear_pad_feedback();
     }
 
     fn guide_reply(&self, payload: &[u8]) {
@@ -159,7 +76,7 @@ impl NoteApp {
         match command {
             GuideCommand::Query => {
                 // Read-only: protocol capability bits, Note mode, session state.
-                self.guide_reply(&[0x41, 0x07, 1, self.guide.active() as u8]);
+                self.guide_reply(&[0x41, 0x03, 1, self.guide.active() as u8]);
             }
             GuideCommand::Layout => {
                 // 64 validity bits packed into ten 7-bit bytes, then 64 pitches.
@@ -179,7 +96,6 @@ impl NoteApp {
                 self.guide_reply(&payload);
             }
             GuideCommand::Begin => {
-                self.clear_legacy_feedback();
                 self.guide.begin();
                 self.draw();
                 self.guide_reply(&[0x50, 0x10, 1]);
@@ -192,7 +108,6 @@ impl NoteApp {
             }
             GuideCommand::End => {
                 self.guide.end();
-                self.clear_legacy_feedback();
                 self.draw();
                 self.guide_reply(&[0x50, 0x12, 0]);
             }
@@ -211,15 +126,7 @@ impl NoteApp {
         } else {
             PadColor::Rgb(0x9beaff)
         };
-        // Current > locally held > preview > legacy ch1 > scale background.
-        // Clearing any one layer always reveals the next active layer.
-        if self.current[note as usize] != 0 {
-            PadColor::Novation(self.current[note as usize])
-        } else if self.active.contains(&Some(note)) {
-            played_color
-        } else if self.preview[note as usize] != 0 {
-            PadColor::Novation(self.preview[note as usize])
-        } else if self.external[note as usize] {
+        if self.active.contains(&Some(note)) {
             played_color
         } else {
             PadColor::Rgb(base_color(note, self.transpose.total()))
@@ -234,15 +141,6 @@ impl NoteApp {
             self.active[slot].is_some(),
         ) {
             return PadColor::Novation(color);
-        }
-        if self.pad_current[slot] != 0 {
-            return PadColor::Novation(self.pad_current[slot]);
-        }
-        // A pad-specific preview must remain visible even if a previous hit
-        // on another pad with the same pitch is still marked current (ch3).
-        // A physically held pad keeps its legacy display until released.
-        if self.pad_preview[slot] != 0 && self.active[slot].is_none() {
-            return PadColor::Novation(self.pad_preview[slot]);
         }
         note_for(self.preset, index, self.transpose.total())
             .map_or(PadColor::Rgb(0), |note| self.pad_color(note))
@@ -264,10 +162,6 @@ impl NoteApp {
                 }
             }
         }
-    }
-
-    fn refresh_pad(&self, index: u8) {
-        Self::set_pad(index, self.grid_color(index));
     }
 
     fn draw(&self) {
@@ -311,7 +205,6 @@ impl NoteApp {
 
     fn change_transpose(&mut self, next: Transpose) {
         self.release_all();
-        self.clear_pad_feedback();
         self.transpose = next;
         self.draw();
     }
@@ -348,8 +241,6 @@ impl NoteApp {
 impl App for NoteApp {
     fn on_enter(&mut self) {
         self.guide.end();
-        self.clear_legacy_feedback();
-        self.clear_pad_feedback();
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
@@ -361,8 +252,6 @@ impl App for NoteApp {
     fn on_exit(&mut self) {
         self.release_all();
         self.guide.end();
-        self.clear_legacy_feedback();
-        self.clear_pad_feedback();
         self.choosing = false;
         self.up_held = false;
         self.down_held = false;
@@ -376,7 +265,6 @@ impl App for NoteApp {
             if event.pressed && event.index / 10 == 1 {
                 if let Some(preset) = Preset::from_slot(event.index % 10 - 1) {
                     self.release_all();
-                    self.clear_pad_feedback();
                     self.preset = preset;
                     self.choosing = false;
                     self.draw();
@@ -416,16 +304,7 @@ impl App for NoteApp {
         }
     }
 
-    fn on_midi(&mut self, event: MidiEvent) {
-        if self.guide.active() { return; } // Suppress old ch1–5 LEDs during private guide session.
-        if let Some(index) = self.update_pad_feedback(event) {
-            if !self.choosing {
-                self.refresh_pad(index);
-            }
-        } else if let Some(note) = self.update_external(event) && !self.choosing {
-            self.refresh_pitch(note);
-        }
-    }
+    fn on_midi(&mut self, _event: MidiEvent) {}
 
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
         let Some(note) = grid_slot(event.index).and_then(|slot| self.active[slot]) else { return };
@@ -438,7 +317,6 @@ impl App for NoteApp {
 
     fn on_tick(&mut self) {
         if self.guide.tick() {
-            self.clear_legacy_feedback();
             self.draw();
         }
     }
@@ -453,202 +331,83 @@ mod tests {
     }
 
     #[test]
-    fn external_note_on_and_both_off_forms_update_feedback() {
+    fn legacy_midi_never_lights_pads_before_during_or_after_guide_session() {
         let mut app = NoteApp::new();
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 100)), Some(48));
-        assert_eq!(app.pad_color(48), PadColor::Rgb(0xffa2ea));
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 0)), Some(48));
-        assert_eq!(app.pad_color(48), PadColor::Rgb(base_color(48, 0)));
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x90, 48, 1)), Some(48));
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x80, 48, 64)), Some(48));
-        assert_eq!(app.pad_color(48), PadColor::Rgb(base_color(48, 0)));
-    }
-
-    #[test]
-    fn independent_layers_reveal_the_next_active_color() {
-        let mut app = NoteApp::new();
-        let note = note_for(Preset::Chromatic, 15, 0).unwrap();
-        assert_eq!(note_for(Preset::Chromatic, 71, 0), Some(note));
-        app.update_external(midi(MidiPort::Midi, 0x90, note, 127));
-        app.update_external(midi(MidiPort::Midi, 0x91, note, 13));
-        assert_eq!(app.pad_color(note), PadColor::Novation(13));
-        app.update_external(midi(MidiPort::Midi, 0x92, note, 42));
-        assert_eq!(app.pad_color(note), PadColor::Novation(42));
-        // Clearing the hidden preview must not clear current.
-        app.update_external(midi(MidiPort::Midi, 0x81, note, 0));
-        assert_eq!(app.pad_color(note), PadColor::Novation(42));
-        app.update_external(midi(MidiPort::Midi, 0x91, note, 13));
-        app.update_external(midi(MidiPort::Midi, 0x92, note, 0));
-        assert_eq!(app.pad_color(note), PadColor::Novation(13));
-        app.update_external(midi(MidiPort::Midi, 0x91, note, 0));
-        assert_eq!(app.pad_color(note), PadColor::Rgb(0xffa2ea));
-        app.update_external(midi(MidiPort::Midi, 0x80, note, 0));
-        assert_eq!(app.pad_color(note), PadColor::Rgb(base_color(note, 0)));
-    }
-
-    #[test]
-    fn local_press_survives_external_off_and_preview() {
-        let mut app = NoteApp::new();
+        let base = app.grid_color(11);
+        for session in 0..3 {
+            if session == 1 { app.guide.begin(); }
+            if session == 2 { app.guide.end(); }
+            for channel in 0..5 {
+                for status in [0x80 | channel, 0x90 | channel] {
+                    for port in [MidiPort::Midi, MidiPort::Daw] {
+                        app.on_midi(midi(port, status, 48, 127));
+                        app.on_midi(midi(port, status, 11, 127));
+                        assert_eq!(app.grid_color(11), base);
+                    }
+                }
+            }
+        }
         app.active[0] = Some(48);
-        app.update_external(midi(MidiPort::Midi, 0x90, 48, 127));
-        app.update_external(midi(MidiPort::Midi, 0x80, 48, 0));
-        app.update_external(midi(MidiPort::Midi, 0x91, 48, 5));
-        assert_eq!(app.pad_color(48), PadColor::Rgb(0xffa2ea));
-        app.update_external(midi(MidiPort::Midi, 0x92, 48, 9));
-        assert_eq!(app.pad_color(48), PadColor::Novation(9));
-        app.update_external(midi(MidiPort::Midi, 0x82, 48, 0));
-        assert_eq!(app.pad_color(48), PadColor::Rgb(0xffa2ea));
+        assert_eq!(app.grid_color(11), PadColor::Rgb(0xffa2ea));
+        app.on_midi(midi(MidiPort::Midi, 0x80, 48, 0));
+        assert_eq!(app.grid_color(11), PadColor::Rgb(0xffa2ea));
         app.active[0] = None;
-        assert_eq!(app.pad_color(48), PadColor::Novation(5));
+        app.guide.begin();
+        app.guide.set(1, 0, 48, 21);
+        app.on_midi(midi(MidiPort::Midi, 0x92, 48, 127));
+        assert_eq!(app.grid_color(11), PadColor::Novation(21));
+    }
+
+    #[test]
+    fn query_reports_only_sysex_guide_capabilities() {
+        let mut app = NoteApp::new();
+        let mut request = [0; 16];
+        let len = guide::reply(&[0x01], guide::MODEL_X, &mut request).unwrap();
+        assert!(app.receive_guide_sysex(&request[..len]));
+        let replies = crate::driver::take_midi();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].0, MidiPort::Midi);
+        assert_eq!(&replies[0].1[7..11], &[0x41, 0x03, 1, 0]);
+    }
+
+    #[test]
+    fn pad_press_and_release_still_send_performance_notes() {
+        let mut app = NoteApp::new();
+        crate::driver::take_midi();
+        app.on_surface(SurfaceEvent { index: 11, pressed: true, value: 112 });
+        app.on_surface(SurfaceEvent { index: 11, pressed: false, value: 8 });
+        assert_eq!(crate::driver::take_midi(), vec![
+            (MidiPort::Midi, vec![0x90, 48, 127]),
+            (MidiPort::Midi, vec![0x90, 48, 0]),
+        ]);
     }
 
     #[test]
     fn overlapping_pads_keep_local_color_until_both_are_released() {
         let mut app = NoteApp::new();
-        let note = note_for(Preset::Chromatic, 15, 0).unwrap();
-        app.active[4] = Some(note);
-        app.active[48] = Some(note);
-        app.update_external(midi(MidiPort::Midi, 0x91, note, 13));
-        app.active[4] = None;
-        assert_eq!(app.pad_color(note), PadColor::Rgb(0xffa2ea));
-        app.active[48] = None;
-        assert_eq!(app.pad_color(note), PadColor::Novation(13));
-    }
-
-    #[test]
-    fn only_note_messages_on_channels_one_to_three_of_midi_port_change_feedback() {
-        let mut app = NoteApp::new();
-        for event in [
-            midi(MidiPort::Daw, 0x90, 48, 127),
-            midi(MidiPort::Daw, 0x91, 48, 127),
-            midi(MidiPort::Midi, 0x93, 48, 127),
-            midi(MidiPort::Midi, 0xb0, 48, 127),
-            midi(MidiPort::Midi, 0x90, 128, 127),
-            midi(MidiPort::Midi, 0x92, 48, 128),
-        ] {
-            assert_eq!(app.update_external(event), None);
-        }
-        assert_eq!(app.pad_color(48), PadColor::Rgb(base_color(48, 0)));
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x91, 48, 127)), Some(48));
-        assert_eq!(app.update_external(midi(MidiPort::Midi, 0x91, 48, 127)), None);
-        assert_eq!(app.pad_color(48), PadColor::Novation(127));
-    }
-
-    #[test]
-    fn layer_state_follows_pitch_across_layout_and_transpose_and_clears_on_exit() {
-        let mut app = NoteApp::new();
-        app.update_external(midi(MidiPort::Midi, 0x92, 48, 12));
-        assert_eq!(app.pad_color(note_for(Preset::Chromatic, 11, 0).unwrap()), PadColor::Novation(12));
-        app.preset = Preset::Classic;
-        assert_eq!(app.pad_color(note_for(Preset::Classic, 11, 0).unwrap()), PadColor::Rgb(base_color(36, 0)));
-        assert_eq!(app.pad_color(note_for(Preset::Classic, 41, 0).unwrap()), PadColor::Novation(12));
-        app.transpose = app.transpose.shifted(12).unwrap();
-        assert_eq!(app.pad_color(note_for(Preset::Classic, 11, 12).unwrap()), PadColor::Novation(12));
-        app.on_exit();
-        assert_eq!(app.pad_color(48), PadColor::Rgb(base_color(48, 12)));
-    }
-
-    #[test]
-    fn pad_layers_target_only_one_of_two_pads_with_the_same_pitch() {
-        let mut app = NoteApp::new();
         let pitch = note_for(Preset::Chromatic, 15, 0).unwrap();
         assert_eq!(note_for(Preset::Chromatic, 71, 0), Some(pitch));
-        app.update_external(midi(MidiPort::Midi, 0x92, pitch, 42));
-        assert_eq!(app.grid_color(15), PadColor::Novation(42));
-        assert_eq!(app.grid_color(71), PadColor::Novation(42));
-
-        // Next strike on a different pad stays visible over ch3's pitch-wide current.
-        assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x93, 71, 13)), Some(71));
-        assert_eq!(app.grid_color(15), PadColor::Novation(42));
-        assert_eq!(app.grid_color(71), PadColor::Novation(13));
-        assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x94, 15, 21)), Some(15));
-        assert_eq!(app.grid_color(15), PadColor::Novation(21));
-        assert_eq!(app.grid_color(71), PadColor::Novation(13));
-
-        assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x84, 15, 127)), Some(15));
-        assert_eq!(app.grid_color(15), PadColor::Novation(42));
-        assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x93, 71, 0)), Some(71));
-        assert_eq!(app.grid_color(71), PadColor::Novation(42));
-        app.update_external(midi(MidiPort::Midi, 0x82, pitch, 0));
+        app.active[4] = Some(pitch);
+        app.active[48] = Some(pitch);
+        app.active[4] = None;
+        assert_eq!(app.grid_color(15), PadColor::Rgb(0xffa2ea));
+        app.active[48] = None;
         assert_eq!(app.grid_color(15), PadColor::Rgb(base_color(pitch, 0)));
-        assert_eq!(app.grid_color(71), PadColor::Rgb(base_color(pitch, 0)));
     }
 
     #[test]
-    fn pad_current_wins_and_preview_does_not_hide_a_pressed_pad() {
-        let mut app = NoteApp::new();
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x93, 11, 1));
-        app.active[0] = Some(48);
-        assert_eq!(app.grid_color(11), PadColor::Rgb(0xffa2ea));
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x94, 11, 127));
-        assert_eq!(app.grid_color(11), PadColor::Novation(127));
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x94, 11, 0));
-        assert_eq!(app.grid_color(11), PadColor::Rgb(0xffa2ea));
-        app.active[0] = None;
-        assert_eq!(app.grid_color(11), PadColor::Novation(1));
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x83, 11, 0));
-        assert_eq!(app.grid_color(11), PadColor::Rgb(base_color(48, 0)));
-    }
-
-    #[test]
-    fn pad_feedback_accepts_exactly_the_64_grid_indices_on_midi_port() {
-        let mut app = NoteApp::new();
-        for row in 1..=8 {
-            for col in 1..=8 {
-                let index = row * 10 + col;
-                assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x93, index, 127)), Some(index));
-                assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x93, index, 127)), None);
-                assert_eq!(app.grid_color(index), PadColor::Novation(127));
-            }
-        }
-        for index in 0..=127 {
-            if grid_slot(index).is_none() {
-                assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x94, index, 1)), None);
-            }
-        }
-        for event in [
-            midi(MidiPort::Daw, 0x93, 11, 1),
-            midi(MidiPort::Midi, 0x95, 11, 1),
-            midi(MidiPort::Midi, 0xb3, 11, 1),
-            midi(MidiPort::Midi, 0x94, 11, 128),
-        ] {
-            assert_eq!(app.update_pad_feedback(event), None);
-        }
-        assert_eq!(app.update_pad_feedback(midi(MidiPort::Midi, 0x83, 11, 0)), Some(11));
-        assert_eq!(app.grid_color(11), PadColor::Rgb(base_color(48, 0)));
-    }
-
-    #[test]
-    fn pad_overlays_clear_on_layout_or_transpose_change_and_mode_exit() {
-        let mut app = NoteApp::new();
-        app.update_external(midi(MidiPort::Midi, 0x92, 48, 9));
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x93, 11, 13));
-        app.clear_pad_feedback(); // Called by preset selection and transpose changes.
-        assert_eq!(app.grid_color(11), PadColor::Novation(9));
-        app.preset = Preset::Classic;
-        assert_eq!(app.grid_color(11), PadColor::Rgb(base_color(36, 0)));
-        app.transpose = app.transpose.shifted(12).unwrap();
-        assert_eq!(app.grid_color(11), PadColor::Novation(9));
-        app.update_pad_feedback(midi(MidiPort::Midi, 0x94, 11, 21));
-        app.on_exit();
-        assert_eq!(app.pad_current[0], 0);
-        assert_eq!(app.pad_preview[0], 0);
-        assert_eq!(app.grid_color(11), PadColor::Rgb(base_color(48, 12)));
-    }
-
-    #[test]
-    fn private_guide_tracks_pitch_across_transpose_and_preset_and_expires_on_exit() {
+    fn private_guide_tracks_pitch_across_transpose_and_preset_and_clears_on_exit() {
         let mut app = NoteApp::new();
         app.guide.begin();
         app.guide.set(0, 0, 48, 13);
         assert_eq!(app.grid_color(11), PadColor::Novation(13));
         assert_ne!(app.grid_color(15), PadColor::Novation(13));
-        app.transpose = app.transpose.shifted(-4).unwrap();
+        for _ in 0..4 { app.transpose = app.transpose.shifted(-1).unwrap(); }
         assert_eq!(app.grid_color(21), PadColor::Novation(13));
         app.preset = Preset::Classic;
-        app.transpose = app.transpose.shifted(4).unwrap();
+        app.transpose = app.transpose.without_semitones();
         assert_eq!(app.grid_color(41), PadColor::Novation(13));
-        app.active[24] = Some(48); // Pad 41 is physically held: preview must not hide it.
+        app.active[24] = Some(48);
         assert_ne!(app.grid_color(41), PadColor::Novation(13));
         app.active[24] = None;
         app.guide.set(1, 0, 48, 21);
