@@ -25,7 +25,7 @@ mod note_transpose;
 
 // The private guide's envelope and session state are pure and host-testable.
 #[cfg(test)]
-#[path = "../../src/app/note/guide.rs"]
+#[path = "../../src/app/guide.rs"]
 mod note_guide;
 
 #[cfg(test)]

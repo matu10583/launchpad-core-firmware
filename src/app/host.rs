@@ -239,6 +239,15 @@ impl AppHost {
         {
             return;
         }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if port == MidiPort::Midi {
+            let consumed = match self.current {
+                AppId::Note => self.note.receive_guide_sysex(data),
+                AppId::CustomNote => self.custom_note.receive_guide_sysex(data),
+                _ => false,
+            };
+            if consumed { return; }
+        }
         if port == MidiPort::Daw {
             if sysex::device_inquiry::execute(self.current, port, data)
                 || sysex::version_inquiry::execute(self.current, port, data)

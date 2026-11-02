@@ -3,7 +3,6 @@
 
 mod layout;
 mod transpose;
-mod guide;
 
 use crate::app::apptrait::App;
 use crate::app::events::{AftertouchEvent, MidiEvent, SurfaceEvent};
@@ -15,7 +14,7 @@ use crate::sys::settings;
 
 use layout::{base_color, grid_slot, note_for, Preset};
 use transpose::Transpose;
-use guide::{Command as GuideCommand, Guide};
+use crate::app::guide::{self, Command as GuideCommand, Guide};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PadColor {
@@ -148,7 +147,7 @@ impl NoteApp {
 
     fn guide_reply(&self, payload: &[u8]) {
         let mut response = [0u8; 96];
-        if let Some(len) = guide::reply(payload, &mut response) {
+        if let Some(len) = guide::reply(payload, guide::MODEL_X, &mut response) {
             driver::send_midi(MidiPort::Midi, &response[..len]);
         }
     }
@@ -156,26 +155,26 @@ impl NoteApp {
     // Private prototype: only AppHost's LPX (MIDI) / Note route calls this.
     // No Novation or universal SysEx identifier is reused.
     pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
-        let Some(command) = guide::decode(data) else { return false };
+        let Some(command) = guide::decode(data, guide::MODEL_X) else { return false };
         match command {
             GuideCommand::Query => {
                 // Read-only: protocol capability bits, Note mode, session state.
                 self.guide_reply(&[0x41, 0x07, 1, self.guide.active() as u8]);
             }
             GuideCommand::Layout => {
-                // 8 validity bits followed by the 64 grid pitches (invalid=0).
-                let mut payload = [0u8; 75];
+                // 64 validity bits packed into ten 7-bit bytes, then 64 pitches.
+                let mut payload = [0u8; 77];
                 payload[0] = 0x42;
                 payload[1] = self.preset.slot();
                 payload[2] = (self.transpose.total() + 64) as u8;
                 for slot in 0..64 {
                     let index = (slot / 8 + 1) as u8 * 10 + (slot % 8 + 1) as u8;
                     if let Some(pitch) = note_for(self.preset, index, self.transpose.total()) {
-                        payload[3 + slot / 8] |= 1 << (slot % 8);
-                        payload[11 + slot] = pitch;
+                        payload[3 + slot / 7] |= 1 << (slot % 7);
+                        payload[13 + slot] = pitch;
                     }
                 }
-                // 75-byte payload + 8-byte private framing = 83 bytes,
+                // 77-byte payload + 8-byte private framing = 85 bytes,
                 // within the USB MIDI TX queue's 32 packets.
                 self.guide_reply(&payload);
             }

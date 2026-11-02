@@ -7,6 +7,8 @@ pub mod boot;
 pub mod custom_note;
 pub mod daw;
 pub mod events;
+#[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+pub mod guide;
 pub mod host;
 #[cfg(feature = "launchpad-x")]
 pub mod note;

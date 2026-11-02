@@ -2,6 +2,7 @@
 // Fixed Pro MK3 Custom layout. DIN routing is deliberately not claimed here.
 
 use crate::app::{AftertouchEvent, App, MidiEvent, SurfaceEvent};
+use crate::app::guide::{self, Command as GuideCommand, Guide};
 use crate::app::performance::apply_velocity_curve;
 use crate::driver;
 use crate::sys::{led, settings};
@@ -22,6 +23,7 @@ pub struct CustomNoteApp {
     current: [u8; 128],
     pad_preview: [u8; 64],
     pad_current: [u8; 64],
+    guide: Guide,
     arrows: [bool; 4],
     reset_latch: [bool; 2],
     channel: u8,
@@ -34,6 +36,7 @@ impl CustomNoteApp {
             octaves: 0, semitones: 0, held: [None; 64],
             external: [false; 128], preview: [0; 128], current: [0; 128],
             pad_preview: [0; 64], pad_current: [0; 64],
+            guide: Guide::new(),
             arrows: [false; 4], reset_latch: [false; 2],
             channel: 0, channel_view: false,
         }
@@ -68,8 +71,60 @@ impl CustomNoteApp {
         self.pad_current.fill(0);
     }
 
+    fn clear_legacy_feedback(&mut self) {
+        self.external.fill(false);
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
+    }
+
+    fn guide_reply(&self, payload: &[u8]) {
+        let mut response = [0u8; 96];
+        if let Some(len) = guide::reply(payload, guide::MODEL_PRO_MK3, &mut response) {
+            driver::send_midi(MidiPort::Midi, &response[..len]);
+        }
+    }
+
+    pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
+        let Some(command) = guide::decode(data, guide::MODEL_PRO_MK3) else { return false };
+        match command {
+            GuideCommand::Query => self.guide_reply(&[0x41, 0x07, 2, self.guide.active() as u8]),
+            GuideCommand::Layout => {
+                let payload = guide::pro_layout(2, 0, 0, 0, self.transpose(),
+                    |index| Self::pitch(index, self.transpose()));
+                self.guide_reply(&payload);
+            }
+            GuideCommand::Begin => {
+                self.clear_legacy_feedback();
+                self.guide.begin();
+                self.redraw();
+                self.guide_reply(&[0x50, 0x10, 1]);
+            }
+            GuideCommand::Keepalive => {
+                if self.guide.active() {
+                    self.guide.renew();
+                    self.guide_reply(&[0x50, 0x11, 1]);
+                }
+            }
+            GuideCommand::End => {
+                self.guide.end();
+                self.clear_legacy_feedback();
+                self.redraw();
+                self.guide_reply(&[0x50, 0x12, 0]);
+            }
+            GuideCommand::Set { layer, side, pitch, color } => {
+                if self.guide.set(layer, side, pitch, color) && !self.channel_view { self.redraw(); }
+            }
+        }
+        true
+    }
+
     fn color(&self, index: u8) -> PadColor {
         let Some(slot) = Self::slot(index) else { return PadColor::Rgb(0) };
+        if let Some(color) = self.guide.pad_color(index,
+            Self::pitch(index, self.transpose()), self.held[slot].is_some()) {
+            return PadColor::Novation(color);
+        }
         if self.pad_current[slot] != 0 {
             return PadColor::Novation(self.pad_current[slot]);
         }
@@ -208,18 +263,14 @@ impl CustomNoteApp {
 
 impl App for CustomNoteApp {
     fn on_enter(&mut self) {
-        self.external.fill(false);
-        self.preview.fill(0);
-        self.current.fill(0);
-        self.clear_pad_feedback();
+        self.guide.end();
+        self.clear_legacy_feedback();
         self.redraw();
     }
     fn on_exit(&mut self) {
         self.release_all();
-        self.external = [false; 128];
-        self.preview.fill(0);
-        self.current.fill(0);
-        self.clear_pad_feedback();
+        self.guide.end();
+        self.clear_legacy_feedback();
         self.arrows = [false; 4];
         self.reset_latch = [false; 2];
         self.channel_view = false;
@@ -266,6 +317,8 @@ impl App for CustomNoteApp {
         self.redraw();
     }
     fn on_midi(&mut self, event: MidiEvent) {
+        if self.guide.active() && event.port == MidiPort::Midi
+            && (event.status & 0x0f) < 5 { return; }
         if self.receive_feedback(event) && !self.channel_view { self.redraw(); }
     }
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
@@ -277,7 +330,12 @@ impl App for CustomNoteApp {
             _ => {}
         }
     }
-    fn on_tick(&mut self) {}
+    fn on_tick(&mut self) {
+        if self.guide.tick() {
+            self.clear_legacy_feedback();
+            self.redraw();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +462,21 @@ mod tests {
         assert!(!app.external[49]);
         assert!(app.receive_feedback(midi(MidiPort::Midi, 0x93, 11, 99)));
         assert_eq!(app.pad_preview[0], 99);
+    }
+
+    #[test]
+    fn private_guide_uses_two_halves_and_expires() {
+        let mut app = C::new();
+        app.guide.begin();
+        app.guide.set(0, 1, 72, 21);
+        assert_eq!(app.color(15), PadColor::Novation(21));
+        assert_ne!(app.color(71), PadColor::Novation(21));
+        app.guide.set(1, 0, 72, 13);
+        assert_eq!(app.color(71), PadColor::Novation(13));
+        app.octaves = 1;
+        assert_eq!(app.color(41), PadColor::Novation(13));
+        for _ in 0..crate::app::guide::LEASE_TICKS { app.guide.tick(); }
+        assert!(!app.guide.active());
+        assert_ne!(app.color(41), PadColor::Novation(13));
     }
 }
