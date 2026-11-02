@@ -1,0 +1,73 @@
+name: Launchpad X and Pro Mk3 firmware check
+
+on:
+  push:
+    branches: [integrate-x-pro-mk3, code]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: lpx
+            firmware: core-launchpad-x
+            model: Launchpad X
+            product: /x
+          - device: lppmk3
+            firmware: core-launchpad-pro-mk3
+            model: Launchpad Pro MK3
+            product: /lppmk3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94.1'
+          targets: thumbv7em-none-eabihf
+          components: rust-src,llvm-tools
+      - name: Test package tooling
+        run: cargo test --locked -p xtask
+      - name: Package ${{ matrix.model }} only
+        env:
+          CORE_FW_CARGO_LOCKED: '1'
+        run: cargo run --locked -p xtask -- package ${{ matrix.device }} --release
+      - name: Verify package and manifest
+        env:
+          MODEL: ${{ matrix.model }}
+          PRODUCT: ${{ matrix.product }}
+          FIRMWARE: ${{ matrix.firmware }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          build = pathlib.Path('build')
+          syx = build / (os.environ['FIRMWARE'] + '.syx')
+          manifest = build / (os.environ['FIRMWARE'] + '.manifest.json')
+          assert syx.is_file() and syx.stat().st_size > 0
+          assert manifest.is_file() and manifest.stat().st_size > 0
+          data = json.loads(manifest.read_text())
+          assert data['model']['name'] == os.environ['MODEL']
+          assert data['updater']['product'] == os.environ['PRODUCT']
+          assert data['source_commit'] == os.environ['SOURCE_SHA']
+          assert data['source_dirty'] is False
+          record = next(a for a in data['artifacts'] if a['name'] == syx.name)
+          assert record['size'] == syx.stat().st_size
+          assert record['sha256'] == hashlib.sha256(syx.read_bytes()).hexdigest()
+          assert record['message_count'] > 0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.device }}-${{ github.sha }}-UNVERIFIED
+          path: |
+            build/${{ matrix.firmware }}.syx
+            build/${{ matrix.firmware }}.manifest.json
+          if-no-files-found: error
+          retention-days: 14

@@ -11,18 +11,37 @@ use crate::sys::rotation;
 use crate::sys::settings;
 use crate::utils::layout;
 
-pub struct PerformanceApp;
+pub struct PerformanceApp {
+    #[cfg(feature = "launchpad-pro-mk3")]
+    held: [bool; 128],
+}
 
 impl PerformanceApp {
     pub const fn new() -> Self {
-        Self
+        Self {
+            #[cfg(feature = "launchpad-pro-mk3")]
+            held: [false; 128],
+        }
     }
 }
 
 impl App for PerformanceApp {
-    fn on_enter(&mut self) {}
+    fn on_enter(&mut self) {
+        #[cfg(feature = "launchpad-pro-mk3")]
+        for index in [93, 94, 96] {
+            led::set_raw(index, 0x484848);
+        }
+    }
 
-    fn on_exit(&mut self) {}
+    fn on_exit(&mut self) {
+        #[cfg(feature = "launchpad-pro-mk3")]
+        for (note, held) in self.held.iter_mut().enumerate() {
+            if *held {
+                driver::send_midi(MidiPort::Midi, &[0x90, note as u8, 0]);
+                *held = false;
+            }
+        }
+    }
 
     fn on_surface(&mut self, event: SurfaceEvent) {
         #[cfg(feature = "launchpad-pro-mk3")]
@@ -39,6 +58,9 @@ impl App for PerformanceApp {
         if note == 0 {
             return;
         }
+
+        #[cfg(feature = "launchpad-pro-mk3")]
+        { self.held[note as usize] = event.pressed; }
 
         let velocity = settings::with(|settings| {
             if event.pressed {

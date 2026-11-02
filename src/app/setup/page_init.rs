@@ -13,6 +13,10 @@ use crate::sys::settings;
 const PERFORMANCE_BUTTON: u8 = 11;
 #[cfg(feature = "launchpad-x")]
 const NOTE_BUTTON: u8 = 14;
+#[cfg(feature = "launchpad-pro-mk3")]
+const CUSTOM_NOTE_BUTTON: u8 = 14;
+#[cfg(feature = "launchpad-pro-mk3")]
+const NOTE_BUTTON: u8 = 24;
 const PROGRAMMER_BUTTON: u8 = 13;
 const DAW_BUTTON: u8 = 12;
 const PALETTE_RAINBOW_BUTTON: u8 = 25;
@@ -51,8 +55,10 @@ impl InitPage {
 
     pub fn set_current_mode(&mut self, app: AppId) {
         let supported = matches!(app, AppId::Performance | AppId::Programmer | AppId::Daw);
-        #[cfg(feature = "launchpad-x")]
+        #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
         let supported = supported || app == AppId::Note;
+        #[cfg(feature = "launchpad-pro-mk3")]
+        let supported = supported || app == AppId::CustomNote;
         if supported {
             self.current_mode = app;
             self.selected_mode = None;
@@ -73,6 +79,10 @@ impl InitPage {
 
     fn draw_mode_selector(&self) {
         let mode = self.active_mode();
+        #[cfg(feature = "launchpad-pro-mk3")]
+        led::set(CUSTOM_NOTE_BUTTON, if mode == AppId::CustomNote { 0xff4080 } else { 0x401020 });
+        #[cfg(feature = "launchpad-pro-mk3")]
+        led::set(NOTE_BUTTON, if mode == AppId::Note { 0x80dfc0 } else { 0x204034 });
         led::set(
             DAW_BUTTON,
             if mode == AppId::Daw {
@@ -189,7 +199,12 @@ impl Page for InitPage {
                 self.selected_mode = Some(AppId::Programmer);
                 self.draw_mode_selector();
             }
-            #[cfg(feature = "launchpad-x")]
+            #[cfg(feature = "launchpad-pro-mk3")]
+            CUSTOM_NOTE_BUTTON => {
+                self.selected_mode = Some(AppId::CustomNote);
+                self.draw_mode_selector();
+            }
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
             NOTE_BUTTON => {
                 self.selected_mode = Some(AppId::Note);
                 self.draw_mode_selector();

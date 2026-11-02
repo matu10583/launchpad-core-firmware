@@ -3,11 +3,15 @@
 
 pub mod apptrait;
 pub mod boot;
+#[cfg(feature = "launchpad-pro-mk3")]
+pub mod custom_note;
 pub mod daw;
 pub mod events;
 pub mod host;
 #[cfg(feature = "launchpad-x")]
 pub mod note;
+#[cfg(feature = "launchpad-pro-mk3")]
+pub mod pro_note;
 pub mod palette_editor;
 pub mod performance;
 pub mod programmer;
@@ -24,9 +28,11 @@ pub enum AppId {
     Boot,
     Setup,
     Performance,
-    #[cfg(feature = "launchpad-x")]
+    #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
     Note,
     Programmer,
     Daw,
     PaletteEditor,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    CustomNote,
 }
