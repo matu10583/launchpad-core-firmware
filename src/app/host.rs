@@ -2,7 +2,11 @@
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
 use crate::app::boot::BootApp;
+#[cfg(feature = "launchpad-pro-mk3")]
+use crate::app::custom_note::CustomNoteApp;
 use crate::app::daw::DawApp;
+#[cfg(feature = "launchpad-pro-mk3")]
+use crate::app::note::NoteApp;
 use crate::app::palette_editor::PaletteEditorApp;
 use crate::app::performance::PerformanceApp;
 use crate::app::programmer::ProgrammerApp;
@@ -27,6 +31,10 @@ pub struct AppHost {
     boot: BootApp,
     setup: SetupApp,
     performance: PerformanceApp,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    custom_note: CustomNoteApp,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    note: NoteApp,
     programmer: ProgrammerApp,
     daw: DawApp,
     pending_host_switch: Option<AppId>,
@@ -39,6 +47,8 @@ pub struct AppHost {
     setup_button_ticks: u16,
     #[cfg(not(feature = "no-setup-btn"))]
     setup_button_active: bool,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    shift_held: bool,
 }
 
 impl AppHost {
@@ -48,6 +58,10 @@ impl AppHost {
             boot: BootApp::new(),
             setup: SetupApp::new(),
             performance: PerformanceApp::new(),
+            #[cfg(feature = "launchpad-pro-mk3")]
+            custom_note: CustomNoteApp::new(),
+            #[cfg(feature = "launchpad-pro-mk3")]
+            note: NoteApp::new(),
             programmer: ProgrammerApp::new(),
             daw: DawApp::new(),
             pending_host_switch: None,
@@ -61,6 +75,8 @@ impl AppHost {
             setup_button_ticks: 0,
             #[cfg(not(feature = "no-setup-btn"))]
             setup_button_active: false,
+            #[cfg(feature = "launchpad-pro-mk3")]
+            shift_held: false,
         }
     }
 
@@ -69,6 +85,10 @@ impl AppHost {
             AppId::Boot => &mut self.boot,
             AppId::Setup => &mut self.setup,
             AppId::Performance => &mut self.performance,
+            #[cfg(feature = "launchpad-pro-mk3")]
+            AppId::CustomNote => &mut self.custom_note,
+            #[cfg(feature = "launchpad-pro-mk3")]
+            AppId::Note => &mut self.note,
             AppId::Programmer => &mut self.programmer,
             AppId::Daw => &mut self.daw,
             AppId::PaletteEditor => &mut self.palette_editor,
@@ -105,6 +125,33 @@ impl AppHost {
 
     #[inline(never)]
     pub fn route_surface_event(&mut self, event: SurfaceEvent) {
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.index == 90 {
+            self.shift_held = event.pressed;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 94
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            if self.current != AppId::Note {
+                self.switch(AppId::Note);
+            }
+            self.note.show_settings(self.shift_held);
+            return;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 96
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            self.switch(AppId::CustomNote);
+            self.custom_note.show_channel_settings(self.shift_held);
+            return;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 93 && matches!(self.current, AppId::CustomNote | AppId::Note) {
+            self.switch(AppId::Daw);
+            return;
+        }
         if event.index != 0 {
             let mut canonical_event = event;
             canonical_event.index = self.to_canonical_index(event.index);
