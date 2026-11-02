@@ -3,6 +3,7 @@
 
 mod layout;
 mod transpose;
+mod guide;
 
 use crate::app::apptrait::App;
 use crate::app::events::{AftertouchEvent, MidiEvent, SurfaceEvent};
@@ -14,6 +15,7 @@ use crate::sys::settings;
 
 use layout::{base_color, grid_slot, note_for, Preset};
 use transpose::Transpose;
+use guide::{Command as GuideCommand, Guide};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PadColor {
@@ -40,6 +42,7 @@ pub struct NoteApp {
     // Physical grid overlays (ch4/ch5), independent of overlapping pitches.
     pad_preview: [u8; 64],
     pad_current: [u8; 64],
+    guide: Guide,
 }
 
 impl NoteApp {
@@ -58,6 +61,7 @@ impl NoteApp {
             current: [0; 128],
             pad_preview: [0; 64],
             pad_current: [0; 64],
+            guide: Guide::new(),
         }
     }
 
@@ -135,6 +139,73 @@ impl NoteApp {
         self.pad_current.fill(0);
     }
 
+    fn clear_legacy_feedback(&mut self) {
+        self.external.fill(false);
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
+    }
+
+    fn guide_reply(&self, payload: &[u8]) {
+        let mut response = [0u8; 96];
+        if let Some(len) = guide::reply(payload, &mut response) {
+            driver::send_midi(MidiPort::Midi, &response[..len]);
+        }
+    }
+
+    // Private prototype: only AppHost's LPX (MIDI) / Note route calls this.
+    // No Novation or universal SysEx identifier is reused.
+    pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
+        let Some(command) = guide::decode(data) else { return false };
+        match command {
+            GuideCommand::Query => {
+                // Read-only: protocol capability bits, Note mode, session state.
+                self.guide_reply(&[0x41, 0x07, 1, self.guide.active() as u8]);
+            }
+            GuideCommand::Layout => {
+                // 8 validity bits followed by the 64 grid pitches (invalid=0).
+                let mut payload = [0u8; 75];
+                payload[0] = 0x42;
+                payload[1] = self.preset.slot();
+                payload[2] = (self.transpose.total() + 64) as u8;
+                for slot in 0..64 {
+                    let index = (slot / 8 + 1) as u8 * 10 + (slot % 8 + 1) as u8;
+                    if let Some(pitch) = note_for(self.preset, index, self.transpose.total()) {
+                        payload[3 + slot / 8] |= 1 << (slot % 8);
+                        payload[11 + slot] = pitch;
+                    }
+                }
+                // 75-byte payload + 8-byte private framing = 83 bytes,
+                // within the USB MIDI TX queue's 32 packets.
+                self.guide_reply(&payload);
+            }
+            GuideCommand::Begin => {
+                self.clear_legacy_feedback();
+                self.guide.begin();
+                self.draw();
+                self.guide_reply(&[0x50, 0x10, 1]);
+            }
+            GuideCommand::Keepalive => {
+                if self.guide.active() {
+                    self.guide.renew();
+                    self.guide_reply(&[0x50, 0x11, 1]);
+                }
+            }
+            GuideCommand::End => {
+                self.guide.end();
+                self.clear_legacy_feedback();
+                self.draw();
+                self.guide_reply(&[0x50, 0x12, 0]);
+            }
+            GuideCommand::Set { layer, side, pitch, color } => {
+                if self.guide.set(layer, side, pitch, color) && !self.choosing {
+                    self.draw();
+                }
+            }
+        }
+        true
+    }
+
     fn pad_color(&self, note: u8) -> PadColor {
         let played_color = if (note as i16 - self.transpose.total()).rem_euclid(12) == 0 {
             PadColor::Rgb(0xffa2ea)
@@ -158,6 +229,13 @@ impl NoteApp {
 
     fn grid_color(&self, index: u8) -> PadColor {
         let Some(slot) = grid_slot(index) else { return PadColor::Rgb(0) };
+        if let Some(color) = self.guide.pad_color(
+            index,
+            note_for(self.preset, index, self.transpose.total()),
+            self.active[slot].is_some(),
+        ) {
+            return PadColor::Novation(color);
+        }
         if self.pad_current[slot] != 0 {
             return PadColor::Novation(self.pad_current[slot]);
         }
@@ -270,9 +348,8 @@ impl NoteApp {
 
 impl App for NoteApp {
     fn on_enter(&mut self) {
-        self.external.fill(false);
-        self.preview.fill(0);
-        self.current.fill(0);
+        self.guide.end();
+        self.clear_legacy_feedback();
         self.clear_pad_feedback();
         self.choosing = false;
         self.up_held = false;
@@ -284,9 +361,8 @@ impl App for NoteApp {
 
     fn on_exit(&mut self) {
         self.release_all();
-        self.external.fill(false);
-        self.preview.fill(0);
-        self.current.fill(0);
+        self.guide.end();
+        self.clear_legacy_feedback();
         self.clear_pad_feedback();
         self.choosing = false;
         self.up_held = false;
@@ -342,6 +418,7 @@ impl App for NoteApp {
     }
 
     fn on_midi(&mut self, event: MidiEvent) {
+        if self.guide.active() { return; } // Suppress old ch1–5 LEDs during private guide session.
         if let Some(index) = self.update_pad_feedback(event) {
             if !self.choosing {
                 self.refresh_pad(index);
@@ -360,7 +437,12 @@ impl App for NoteApp {
         }
     }
 
-    fn on_tick(&mut self) {}
+    fn on_tick(&mut self) {
+        if self.guide.tick() {
+            self.clear_legacy_feedback();
+            self.draw();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -553,5 +635,27 @@ mod tests {
         assert_eq!(app.pad_current[0], 0);
         assert_eq!(app.pad_preview[0], 0);
         assert_eq!(app.grid_color(11), PadColor::Rgb(base_color(48, 12)));
+    }
+
+    #[test]
+    fn private_guide_tracks_pitch_across_transpose_and_preset_and_expires_on_exit() {
+        let mut app = NoteApp::new();
+        app.guide.begin();
+        app.guide.set(0, 0, 48, 13);
+        assert_eq!(app.grid_color(11), PadColor::Novation(13));
+        assert_ne!(app.grid_color(15), PadColor::Novation(13));
+        app.transpose = app.transpose.shifted(-4).unwrap();
+        assert_eq!(app.grid_color(21), PadColor::Novation(13));
+        app.preset = Preset::Classic;
+        app.transpose = app.transpose.shifted(4).unwrap();
+        assert_eq!(app.grid_color(41), PadColor::Novation(13));
+        app.active[24] = Some(48); // Pad 41 is physically held: preview must not hide it.
+        assert_ne!(app.grid_color(41), PadColor::Novation(13));
+        app.active[24] = None;
+        app.guide.set(1, 0, 48, 21);
+        assert_eq!(app.grid_color(41), PadColor::Novation(21));
+        app.on_exit();
+        assert!(!app.guide.active());
+        assert_ne!(app.grid_color(41), PadColor::Novation(21));
     }
 }

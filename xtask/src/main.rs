@@ -23,6 +23,47 @@ mod note_velocity;
 #[path = "../../src/app/note/transpose.rs"]
 mod note_transpose;
 
+// The private guide's envelope and session state are pure and host-testable.
+#[cfg(test)]
+#[path = "../../src/app/note/guide.rs"]
+mod note_guide;
+
+#[cfg(test)]
+mod private_guide_mapping_tests {
+    use super::{note_guide::Guide, note_layout::{note_for, Preset}};
+
+    fn mapped(guide: &Guide, preset: Preset, transpose: i16) -> Vec<(u8, u8)> {
+        let mut result = Vec::new();
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                if let Some(color) = guide.pad_color(index, note_for(preset, index, transpose), false) {
+                    result.push((index, color));
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn pitched_guides_follow_layout_and_transpose_but_stay_in_one_half() {
+        let mut guide = Guide::new();
+        guide.begin();
+        guide.set(0, 0, 48, 13);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13)]);
+        assert_eq!(mapped(&guide, Preset::Chromatic, -4), vec![(21, 13)]);
+        assert_eq!(mapped(&guide, Preset::Classic, 0), vec![(41, 13)]);
+        guide.set(0, 1, 48, 21);
+        assert_eq!(mapped(&guide, Preset::Classic, 0), vec![(41, 13)]); // pitch 48 absent on right
+        guide.set(1, 1, 72, 21);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13), (15, 21)]);
+        guide.set(0, 2, 72, 9);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13), (15, 21), (71, 9)]);
+        guide.end();
+        assert!(mapped(&guide, Preset::Chromatic, 0).is_empty());
+    }
+}
+
 fn find_objcopy() -> Result<PathBuf, Box<dyn Error>> {
     let check = if cfg!(windows) {
         Command::new("where").arg("arm-none-eabi-objcopy").output()

@@ -233,6 +233,12 @@ impl AppHost {
 
     #[inline(never)]
     pub fn receive_sysex(&mut self, port: MidiPort, data: &[u8]) {
+        #[cfg(feature = "launchpad-x")]
+        if port == MidiPort::Midi && self.current == AppId::Note
+            && self.note.receive_guide_sysex(data)
+        {
+            return;
+        }
         if port == MidiPort::Daw {
             if sysex::device_inquiry::execute(self.current, port, data)
                 || sysex::version_inquiry::execute(self.current, port, data)

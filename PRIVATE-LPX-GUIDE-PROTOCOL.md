@@ -1,0 +1,34 @@
+# PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X 練習ガイド試作
+
+**この文書・実装・`.syx`をPUBLICなfork、GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ローカル専用ブランチ `private-lpx-guide-prototype` にのみ置く個人・非商用・非公開の試作。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来公開する場合は、利用権のあるSysEx IDを取得し、`src/app/note/guide.rs` のManufacturer IDを置換して仕様/版/アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。現時点でローカルコンパイル・実機検証は未実施。
+
+## 受信先とバイト配置（**この私用試作内のみ**）
+
+**USB `LPX (MIDI)`のX Note Mode専用**。`LPX (DAW)`、Pro MK3、他のモードでは実行しない。すべての数字は十六進、値は7bit。フレームは必ず次の完全一致形式とする。
+
+```text
+F0 7D 43 46 57 0C 01 cmd [payload] F7
+   │  C  F  W  X  v1
+   └ 個人・非公開試作に限定（公開用IDではない）
+```
+
+| `cmd` | 送信payload | 動作 / 返答 |
+| --- | --- | --- |
+| `01` QUERY | なし | 読み取り専用。`41 07 01 active`（能力bit: `01`左右ガイド、`02`レイアウト、`04`セッション中の旧MIDI抑制；mode=`01` Note；active=`00/01`）。QUERYだけでは状態変更しない。 |
+| `02` GET_LAYOUT | なし | 読み取り専用。`42 preset transpose+64 valid[8] pitches[64]`。`preset=00`半音配列、`01`Cメジャー、`02`旧CoreFW。8行×8列を下行左から上行右へ、slot0=11、slot7=18、slot8=21、slot63=88。`valid[slot/8]`のbit`slot%8`が1なら音程`pitches[slot]`有効、0ならpitch欄は0で無効。64バイトの音程は0～127（127も有効）。全83バイトのSysEx。レイアウト照会は押下状態を変更しない。 |
+| `10` BEGIN | なし | ガイド状態と旧ch1～5 LED状態を消し、5秒間のセッション開始。`50 10 01`を応答。 |
+| `11` KEEPALIVE | なし | セッション中のみ5秒へ更新し`50 11 01`を応答。アプリは2秒ごとに送る。 |
+| `12` END | なし | セッションを終了し新旧表示を消去、`50 12 00`を応答。 |
+| `20` SET | `layer side pitch color` | セッション中のみ受付。`layer=00`予告、`01`現在；`side=00`左4列、`01`右4列、`02`両側；`pitch=00..7F`；`color=01..7F`は固定Novationパレット番号、`00`は指定対象だけを解除。SET成功時は5秒へ更新。 |
+
+返答も同じヘッダと終端を使用し、**`LPX (MIDI)`にのみ送信**。不正なID・モデル・版・長さ・データ（`80`以上）・未知コマンドは無視。`SET`は音や演奏MIDI出力を変更せず、押下パッドIDは送信しない。問い合わせのレスポンスは試作FW特有で、通常のDAW MIDIは変更しない。
+
+## 表示・ライフサイクル
+
+左右×予告/現在×pitchを独立に保持する。同じpitchが同じ側の複数パッドにあるときは全てを表示する。描画時に現在の配列と移調から64パッドの音程を再計算し、グリッド範囲外の音程は表示しない（保持はする）。**新ガイド現在 > 未押下パッドの新ガイド予告 > 従来の表示（旧パッド現在ch5 > 旧パッド予告ch4 > 旧音程現在ch3 > 本体押下 > 旧音程予告ch2 > 旧ch1 > 基底色）**。本体で押しているパッドの予告は隠し、現在は押下表示より優先。同じパッドを連続打鍵する際はアプリ側で現在を解除または予告色へ更新する（1個のLEDに2色は同時表示不可）。
+
+起動時は旧ch1～5互換が有効。BEGIN成功中のみ、受信した旧ch1～5の表示解釈を無視し、新ガイドを優先する（演奏用送信は常に元どおり）。BEGIN/ENDで旧状態を消すため終了後に古い点灯は戻らない。移調・配列変更では新ガイドを**保持して再描画**する。Note Mode退出では消去。USB切断通知に依存せず、最後のSET/KEEPALIVEから5秒で自動終了・消灯・旧方式の受付再開（再接続時はQUERYから）。BEGINを受け付けない旧FWに対してはアプリ側でタイムアウト後に旧ch1～5方式へフォールバックし、非対応FWへ本プロトコルの更新を連投しないこと。**セッション外の旧ch1～5と普通のDAW MIDIとの衝突は残る。** アプリは演奏トラックを表示入力へループバックさせないこと。
+
+## 検証の限界
+
+純粋なフレームデコード・状態・左右別配置のホストテストは`xtask`に追加しているが、ローカルにRustツールチェーンがなく、公開CIにも送れないため未実行。音声・USBの実機動作も未検証。私用オフライン環境でRust 1.94.1、`thumbv7em-none-eabihf`、`rust-src`、`llvm-tools`を用意してから、公開リモートへ送らずに`cargo test --locked -p xtask`、`cargo check --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-x`で確認する。`src/app/note/mod.rs`の`#[cfg(test)]`は`Cargo.toml`で`test=false`のためこのコマンドでは実行されない。
