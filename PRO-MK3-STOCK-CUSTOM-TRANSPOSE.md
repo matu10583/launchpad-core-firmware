@@ -9,6 +9,8 @@
 - Noteボタン（94）で独立したNote Modeに入り、Shift＋Noteで設定画面を開く。Chromatic／Scale、16スケール、ルート、重複配置（sequential／2～5 finger）、MIDIチャンネル1～16、USBノート／Aftertouch、モード退出時のNote Offを実装。既存Setupの24番パッドからも選択できる。**これは純正の全挙動を再現したものではない**（スケールの個別音程や配置の実機照合、設定保存、ドラムレイアウト・Ableton自動切替は未実装／未検証）。
 - **未実装**：DIN入出力、その他の純正モード・設定。現在の起動時動作も純正Liveとは異なる。現行のUSB送信ドライバをDIN送信として扱わないこと。共通ブランチでは `.github/workflows/x-pro-mk3-check.yml` がXとPro MK3を別々にビルドし、検証前の実験用`.syx`をActions artifactとして保存する。Release公開・自動書き込みはしない。
 
+**Live接続時の演奏優先（試作）**：起動アニメーション後はNote Modeに入り、Note／Custom／Setup中はLiveの自動DAWレイアウト要求を無視する。Sessionボタンなどで手動でDAWモードを選んだ場合のみDAW連携を受け付ける。純正のLive自動切替は一時停止しており、この動作の実機検証は未実施。
+
 ## 参照資料
 
 - [Novation公式ユーザーガイド（Web版 Ver. 6.0）](https://userguides.novationmusic.com/hc/en-gb/sections/25494488182418-Launchpad-Pro-MK3-User-Guide)：[各モード、Note/Custom](https://userguides.novationmusic.com/hc/en-gb/articles/25494530115346-Launchpad-Pro-MK3-interface)、[Setup](https://userguides.novationmusic.com/hc/en-gb/articles/25494545308306-Using-the-Launchpad-Pro-MK3-s-Setup-page)、[Sequencer](https://userguides.novationmusic.com/hc/en-gb/articles/25494505907346-Using-Launchpad-Pro-MK3-s-Sequencer)、[MIDI配置付録](https://userguides.novationmusic.com/hc/en-gb/articles/25494488560914-Launchpad-Pro-MK3-appendix)。
@@ -17,7 +19,7 @@
 
 ## 今回の実装対象（優先順）
 
-1. **共通基盤**：Pro MK3の全パッド／矢印／モードボタン／Shift／Setupの物理マップ、演奏中のモード変更時のNote Off、安全な起動・USB MIDIチャンネルとLED更新。CoreFWの既存Performance・Programmer・DAW機能との共存。純正は起動時Live、現在のCoreFWはPerformanceなので起動動作の変更も必要（未対応）。
+1. **共通基盤**：Pro MK3の全パッド／矢印／モードボタン／Shift／Setupの物理マップ、演奏中のモード変更時のNote Off、安全な起動・USB MIDIチャンネルとLED更新。CoreFWの既存Performance・Programmer・DAW機能との共存。純正の起動時Live動作は一時停止し、試作ではNote Modeを既定にした（純正同等ではない）。
 2. **固定Custom Modeを1つ**：提示画像のLED配色と、既存X試作版 `launchpad-x-note-mode-v3` のChromatic配列を採用することでユーザー確認済み。左下MIDI 48、左4列は横1半音・上の行＋4半音、右4列は左の同じ行＋24半音（左上2行＝右下2行）。ド＝ピンク・音階内＝青系・音階外＝暗色。まずMIDIチャンネル1を既定とし、純正同様のチャンネル設定を別途確認する。Components転送、編集UI、8スロットやCC/Program Change/フェーダーは**今回不要**。押下中は同音程の全パッドを点灯し、重複ノートの最後の指を離したときにNote Off。移調はCustomのNote型パッドにだけ適用し、上下＝オクターブ、左右＝半音、各ペア同時押し＝その方向の移調だけリセット。Note On時に送った音程を保持してNote Offを出す。MIDI 0–127の範囲外は発音させない。
 3. **純正に近いNote Mode**：Chromatic（純正既定）、Scale、ドラムのノート配置とLED、上下オクターブ・左右半音、16スケールとルート選択、行の重複設定、チャンネル1–16、Shift＋Noteの設定画面、ベロシティ/Aftertouch。Chromaticの純正初期表示はC minorで、ルートは紫、スケール内は青。**Customとは移調状態を共有せず**、Note側の操作は純正に近づける。Chromatic／Scaleの基本実装は追加済み。ドラムとAbleton Drum Rackの自動判定はDAW連携が必要なので後回し。
 4. **DIN MIDI（必須）**：物理MIDI In、Out 1、Out 2/Thruの切替。純正のUSB MIDIポートとの送受信ルーティング、MIDIチャンネル・クロックRx/Tx、Thruの転送、ループ防止を確認する。通常演奏とCustom移調は送信先ごとに同じ音程と対応するNote Offが届く必要がある。DIN Inからの音もNote/Customの状態と競合しないよう扱う。

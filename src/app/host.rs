@@ -128,7 +128,7 @@ impl AppHost {
     #[inline(never)]
     pub fn route_surface_event(&mut self, event: SurfaceEvent) {
         #[cfg(feature = "launchpad-x")]
-        if event.index == 96 && matches!(self.current, AppId::Performance | AppId::Programmer) {
+        if event.index == 96 && matches!(self.current, AppId::Performance | AppId::Programmer | AppId::Daw) {
             if event.pressed {
                 self.switch(AppId::Note);
             }
@@ -197,6 +197,12 @@ impl AppHost {
     #[inline(never)]
     pub fn route_midi_event(&mut self, event: MidiEvent) {
         if event.port == MidiPort::Daw {
+            // Live may keep sending DAW traffic while the player is in Note mode.
+            // Only a deliberately selected DAW view should receive that traffic.
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
+                return;
+            }
             if self.current == AppId::Daw && Self::handle_led_tempo_event(&event) {
                 return;
             }
@@ -233,6 +239,12 @@ impl AppHost {
             {
                 return;
             }
+            // Do not let Live's automatic DAW enable/layout requests take over
+            // Note mode (or queue a switch during the boot animation/Setup).
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
+                return;
+            }
             let (_, requested) = self.daw.receive_sysex_for_app(data, self.current);
             if let Some(app) = requested {
                 self.request_host_switch(app);
@@ -241,6 +253,10 @@ impl AppHost {
         }
 
         if port == MidiPort::Midi && modes::is_selection(self.daw.model(), data) {
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
+                return;
+            }
             let (_, requested) = self.daw.receive_sysex_for_app(data, self.current);
             if let Some(app) = requested {
                 self.request_host_switch(app);

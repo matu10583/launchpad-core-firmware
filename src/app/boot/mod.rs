@@ -141,11 +141,11 @@ impl App for BootApp {
 }
 
 fn default_app() -> AppId {
-    #[cfg(feature = "launchpad-x")]
+    #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
     {
         AppId::Note
     }
-    #[cfg(not(feature = "launchpad-x"))]
+    #[cfg(not(any(feature = "launchpad-x", feature = "launchpad-pro-mk3")))]
     {
         AppId::Performance
     }
