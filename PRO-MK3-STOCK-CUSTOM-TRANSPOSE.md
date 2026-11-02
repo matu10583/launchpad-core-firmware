@@ -11,6 +11,22 @@
 
 **Live接続時の演奏優先（試作）**：起動アニメーション後はNote Modeに入り、Note／Custom／Setup中はLiveの自動DAWレイアウト要求を無視する。Sessionボタンなどで手動でDAWモードを選んだ場合のみDAW連携を受け付ける。純正のLive自動切替は一時停止しており、この動作の実機検証は未実施。
 
+### Note Modeの練習アプリ用MIDI受信表示（試作・実機未検証）
+
+送信先はUSB **`PRO MK3 (MIDI)`**（DAWポートではない）。X版Note Modeと同じ受信プロトコルをPro MK3の**Note Modeのみ**に追加した。Custom Modeや他モードは対象外。`pitch`はMIDI音程0～127、`pad`は物理グリッド番号11～18、21～28、…、81～88の計64個。左手側は各行1～4列、右手側は5～8列。
+
+| 表示 | 点灯・色更新 | 解除 |
+| --- | --- | --- |
+| 音程単位・従来点灯（ch1） | `90 pitch velocity` | `80 pitch 00` / `90 pitch 00` |
+| 音程単位・予告（ch2） | `91 pitch color` | `81 pitch 00` / `91 pitch 00` |
+| 音程単位・現在（ch3） | `92 pitch color` | `82 pitch 00` / `92 pitch 00` |
+| 物理パッド単位・予告（ch4） | `93 pad color` | `83 pad 00` / `93 pad 00` |
+| 物理パッド単位・現在（ch5） | `94 pad color` | `84 pad 00` / `94 pad 00` |
+
+`color`は固定Novationパレット番号1～127（`01`～`7F`）で、0は解除。ch1のvelocityは0以外なら固定の白色を点灯し、色指定ではない。表示優先順位はX版と同じ **パッド現在ch5 > 未押下パッドの予告ch4 > 音程現在ch3 > 本体押下 > 音程予告ch2 > 従来点灯ch1 > 基底色**。ch4/ch5は演奏中のノート音程を変えず、USBへ音を出さない。配列・スケール・ルート・重複幅・チャンネル設定変更または移調時はパッド単位の指定を消し、音程単位の指定は音程に追従する。設定画面では演奏パッド表示を隠し、モード退出時は全受信表示を消去する。同一パッドの再打鍵はch5がch4に勝つので、アプリからch5を解除するか色を上書きする。
+
+**チャンネル競合への注意**：Pro MK3では従来、選択中の演奏チャンネルからの受信音を白く表示していた。今回からch1～5は上記の表示プロトコルとして予約する。チャンネル1以外でも選択中がch6～16なら従来の受信点灯を維持するが、選択中がch2～5の場合は表示プロトコルを優先し、そのチャンネルの受信を従来方式の白い音程点灯としては扱わない。**本体からの演奏MIDIの送信チャンネルは変更しない**。DAWで演奏MIDIを本体へループバックすると意図しないLED表示になりうるので、アプリの表示制御と演奏のルーティングを分けること。これはCoreFW独自の拡張で純正Pro MK3の仕様ではない。
+
 ## 参照資料
 
 - [Novation公式ユーザーガイド（Web版 Ver. 6.0）](https://userguides.novationmusic.com/hc/en-gb/sections/25494488182418-Launchpad-Pro-MK3-User-Guide)：[各モード、Note/Custom](https://userguides.novationmusic.com/hc/en-gb/articles/25494530115346-Launchpad-Pro-MK3-interface)、[Setup](https://userguides.novationmusic.com/hc/en-gb/articles/25494545308306-Using-the-Launchpad-Pro-MK3-s-Setup-page)、[Sequencer](https://userguides.novationmusic.com/hc/en-gb/articles/25494505907346-Using-Launchpad-Pro-MK3-s-Sequencer)、[MIDI配置付録](https://userguides.novationmusic.com/hc/en-gb/articles/25494488560914-Launchpad-Pro-MK3-appendix)。

@@ -27,6 +27,12 @@ const SCALES: [&[u8]; 16] = [
     &[0, 2, 3, 7, 8],              // Hirajoshi
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PadColor {
+    Rgb(u32),
+    Novation(u8),
+}
+
 pub struct NoteApp {
     semitones: i16,
     octaves: i16,
@@ -38,6 +44,10 @@ pub struct NoteApp {
     settings_view: bool,
     held: [Option<u8>; 64],
     external: [bool; 128],
+    preview: [u8; 128],
+    current: [u8; 128],
+    pad_preview: [u8; 64],
+    pad_current: [u8; 64],
 }
 
 impl NoteApp {
@@ -46,6 +56,8 @@ impl NoteApp {
             semitones: 0, octaves: 0, channel: 0, root: 0, scale: 0,
             overlap: 5, scale_layout: false, settings_view: false,
             held: [None; 64], external: [false; 128],
+            preview: [0; 128], current: [0; 128],
+            pad_preview: [0; 64], pad_current: [0; 64],
         }
     }
 
@@ -95,19 +107,78 @@ impl NoteApp {
         SCALES[self.scale].contains(&((pitch as i16 - self.root as i16).rem_euclid(12) as u8))
     }
 
+    fn clear_pad_feedback(&mut self) {
+        self.pad_preview.fill(0);
+        self.pad_current.fill(0);
+    }
+
+    fn color(&self, index: u8) -> PadColor {
+        let Some(slot) = Self::slot(index) else { return PadColor::Rgb(0) };
+        if self.pad_current[slot] != 0 {
+            return PadColor::Novation(self.pad_current[slot]);
+        }
+        // A new hit on a different pad must remain visible while the old
+        // hit's pitch-wide ch3 current indication is still active.
+        if self.pad_preview[slot] != 0 && self.held[slot].is_none() {
+            return PadColor::Novation(self.pad_preview[slot]);
+        }
+        let Some(p) = self.pitch(index) else { return PadColor::Rgb(0) };
+        if self.current[p as usize] != 0 {
+            PadColor::Novation(self.current[p as usize])
+        } else if self.held_count(p) != 0 {
+            PadColor::Rgb(0xffffff)
+        } else if self.preview[p as usize] != 0 {
+            PadColor::Novation(self.preview[p as usize])
+        } else if self.external[p as usize] {
+            PadColor::Rgb(0xffffff)
+        } else if (p as i16 - self.root as i16).rem_euclid(12) == 0 {
+            PadColor::Rgb(0x903ec0)
+        } else if self.in_scale(p) {
+            PadColor::Rgb(0x207ac0)
+        } else {
+            PadColor::Rgb(0x080808)
+        }
+    }
+
+    fn receive_feedback(&mut self, event: MidiEvent) -> bool {
+        if event.port != MidiPort::Midi || event.data1 > 127 || event.data2 > 127 {
+            return false;
+        }
+        let value = match event.status & 0xf0 {
+            0x90 => event.data2,
+            0x80 => 0,
+            _ => return false,
+        };
+        let channel = event.status & 0x0f;
+        match channel {
+            0 => self.external[event.data1 as usize] = value != 0,
+            1 => self.preview[event.data1 as usize] = value,
+            2 => self.current[event.data1 as usize] = value,
+            3 | 4 => {
+                let Some(slot) = Self::slot(event.data1) else { return false };
+                if channel == 3 {
+                    self.pad_preview[slot] = value;
+                } else {
+                    self.pad_current[slot] = value;
+                }
+            }
+            // Preserve the old selected-channel feedback for channels 6–16.
+            // Channels 2–5 are reserved for the same LED protocol as X.
+            _ if channel == self.channel => self.external[event.data1 as usize] = value != 0,
+            _ => return false,
+        }
+        true
+    }
+
     fn draw(&self) {
         if self.settings_view { self.draw_settings(); return; }
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                let color = match self.pitch(index) {
-                    None => 0,
-                    Some(p) if self.held_count(p) != 0 || self.external[p as usize] => 0xffffff,
-                    Some(p) if (p as i16 - self.root as i16).rem_euclid(12) == 0 => 0x903ec0,
-                    Some(p) if self.in_scale(p) => 0x207ac0,
-                    Some(_) => 0x080808,
-                };
-                led::set(index, color);
+                match self.color(index) {
+                    PadColor::Rgb(rgb) => led::set(index, rgb),
+                    PadColor::Novation(color) => led::novation(index, color),
+                }
             }
         }
         for index in [80, 70, 91, 92] { led::set(index, 0x345060); }
@@ -161,6 +232,7 @@ impl NoteApp {
             }
             _ => return,
         }
+        self.clear_pad_feedback();
         self.draw();
     }
 
@@ -178,15 +250,25 @@ impl NoteApp {
         if !(-100..=60).contains(&next) { return; }
         if amount.abs() == 12 { self.octaves += amount / 12; }
         else { self.semitones += amount; }
+        self.clear_pad_feedback();
         self.draw();
     }
 }
 
 impl App for NoteApp {
-    fn on_enter(&mut self) { self.draw(); }
+    fn on_enter(&mut self) {
+        self.external.fill(false);
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
+        self.draw();
+    }
     fn on_exit(&mut self) {
         self.release_all();
         self.external = [false; 128];
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
         self.settings_view = false;
     }
     fn on_surface(&mut self, event: SurfaceEvent) {
@@ -223,11 +305,7 @@ impl App for NoteApp {
         self.draw();
     }
     fn on_midi(&mut self, event: MidiEvent) {
-        if event.port != MidiPort::Midi || event.status & 0x0f != self.channel || event.data1 > 127 { return; }
-        if matches!(event.status & 0xf0, 0x80 | 0x90) {
-            self.external[event.data1 as usize] = event.status & 0xf0 == 0x90 && event.data2 != 0;
-            if !self.settings_view { self.draw(); }
-        }
+        if self.receive_feedback(event) && !self.settings_view { self.draw(); }
     }
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
         let Some(slot) = Self::slot(event.index) else { return; };
@@ -244,6 +322,10 @@ impl App for NoteApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn midi(port: MidiPort, status: u8, index: u8, value: u8) -> MidiEvent {
+        MidiEvent { port, status, data1: index, data2: value }
+    }
 
     #[test]
     fn default_chromatic_uses_five_finger_overlap_and_c_minor() {
@@ -264,5 +346,98 @@ mod tests {
         assert_eq!(note.pitch(16), note.pitch(21));
         note.overlap = 0;
         assert_ne!(note.pitch(16), note.pitch(21));
+    }
+
+    #[test]
+    fn pitch_and_pad_colors_are_independent_on_duplicate_notes() {
+        let mut note = NoteApp::new();
+        let pitch = note.pitch(16).unwrap();
+        assert_eq!(note.pitch(21), Some(pitch));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x90, pitch, 100)));
+        assert_eq!(note.color(16), PadColor::Rgb(0xffffff));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x91, pitch, 13)));
+        assert_eq!(note.color(16), PadColor::Novation(13));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x92, pitch, 42)));
+        assert_eq!(note.color(21), PadColor::Novation(42));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x93, 21, 5)));
+        assert_eq!(note.color(16), PadColor::Novation(42));
+        assert_eq!(note.color(21), PadColor::Novation(5));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x94, 16, 127)));
+        assert_eq!(note.color(16), PadColor::Novation(127));
+        assert_eq!(note.color(21), PadColor::Novation(5));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x84, 16, 0)));
+        assert_eq!(note.color(16), PadColor::Novation(42));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x83, 21, 0)));
+        assert_eq!(note.color(21), PadColor::Novation(42));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x82, pitch, 0)));
+        assert_eq!(note.color(16), PadColor::Novation(13));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x81, pitch, 0)));
+        assert_eq!(note.color(16), PadColor::Rgb(0xffffff));
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x80, pitch, 0)));
+        assert_ne!(note.color(16), PadColor::Rgb(0xffffff));
+    }
+
+    #[test]
+    fn pad_feedback_respects_local_press_and_rejects_non_grid_indices() {
+        let mut note = NoteApp::new();
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                assert!(note.receive_feedback(midi(MidiPort::Midi, 0x93, index, 1)));
+                assert_eq!(note.color(index), PadColor::Novation(1));
+            }
+        }
+        for index in 0..=127 {
+            if NoteApp::slot(index).is_none() {
+                assert!(!note.receive_feedback(midi(MidiPort::Midi, 0x94, index, 1)));
+            }
+        }
+        for event in [
+            midi(MidiPort::Daw, 0x94, 11, 10),
+            midi(MidiPort::Midi, 0x95, 11, 10),
+            midi(MidiPort::Midi, 0xb4, 11, 10),
+            midi(MidiPort::Midi, 0x94, 11, 128),
+        ] {
+            assert!(!note.receive_feedback(event));
+        }
+        note.held[0] = note.pitch(11);
+        assert_eq!(note.color(11), PadColor::Rgb(0xffffff));
+        note.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 127));
+        assert_eq!(note.color(11), PadColor::Novation(127));
+        note.held[0] = None;
+        note.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 0));
+        assert_eq!(note.color(11), PadColor::Novation(1));
+    }
+
+    #[test]
+    fn selected_channel_feedback_only_on_non_reserved_channels() {
+        let mut note = NoteApp::new();
+        note.channel = 6; // ch7 keeps the original selected-channel feedback.
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x96, 48, 99)));
+        assert!(note.external[48]);
+        note.channel = 3; // ch4 is reserved for pad previews, not pitch feedback.
+        assert!(!note.receive_feedback(midi(MidiPort::Midi, 0x93, 49, 99)));
+        assert!(!note.external[49]);
+        assert!(note.receive_feedback(midi(MidiPort::Midi, 0x93, 11, 99)));
+        assert_eq!(note.pad_preview[0], 99);
+    }
+
+    #[test]
+    fn layout_changes_clear_pad_layers_but_pitch_layers_follow_the_note() {
+        let mut note = NoteApp::new();
+        note.receive_feedback(midi(MidiPort::Midi, 0x92, 48, 12));
+        note.receive_feedback(midi(MidiPort::Midi, 0x93, 11, 13));
+        note.clear_pad_feedback(); // configure() and shift() call this before redrawing.
+        assert_eq!(note.color(11), PadColor::Novation(12));
+        note.overlap = 0;
+        note.octaves = 1;
+        assert_ne!(note.color(11), PadColor::Novation(12));
+        note.octaves = 0;
+        assert_eq!(note.color(11), PadColor::Novation(12));
+        note.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 21));
+        note.on_exit();
+        assert_eq!(note.pad_current[0], 0);
+        assert_eq!(note.pad_preview[0], 0);
+        assert_ne!(note.color(11), PadColor::Novation(12));
     }
 }
