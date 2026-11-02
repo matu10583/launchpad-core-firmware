@@ -7,11 +7,21 @@ use crate::driver;
 use crate::sys::{led, settings};
 use crate::sys::midi::MidiPort;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PadColor {
+    Rgb(u32),
+    Novation(u8),
+}
+
 pub struct CustomNoteApp {
     octaves: i16,
     semitones: i16,
     held: [Option<u8>; 64],
     external: [bool; 128],
+    preview: [u8; 128],
+    current: [u8; 128],
+    pad_preview: [u8; 64],
+    pad_current: [u8; 64],
     arrows: [bool; 4],
     reset_latch: [bool; 2],
     channel: u8,
@@ -22,7 +32,9 @@ impl CustomNoteApp {
     pub const fn new() -> Self {
         Self {
             octaves: 0, semitones: 0, held: [None; 64],
-            external: [false; 128], arrows: [false; 4], reset_latch: [false; 2],
+            external: [false; 128], preview: [0; 128], current: [0; 128],
+            pad_preview: [0; 64], pad_current: [0; 64],
+            arrows: [false; 4], reset_latch: [false; 2],
             channel: 0, channel_view: false,
         }
     }
@@ -51,6 +63,69 @@ impl CustomNoteApp {
         self.held.iter().filter(|&&p| p == Some(pitch)).count()
     }
 
+    fn clear_pad_feedback(&mut self) {
+        self.pad_preview.fill(0);
+        self.pad_current.fill(0);
+    }
+
+    fn color(&self, index: u8) -> PadColor {
+        let Some(slot) = Self::slot(index) else { return PadColor::Rgb(0) };
+        if self.pad_current[slot] != 0 {
+            return PadColor::Novation(self.pad_current[slot]);
+        }
+        // Keep the next hit visible on a different pad even when the
+        // previous hit still has a pitch-wide current indication.
+        if self.pad_preview[slot] != 0 && self.held[slot].is_none() {
+            return PadColor::Novation(self.pad_preview[slot]);
+        }
+        let Some(p) = Self::pitch(index, self.transpose()) else { return PadColor::Rgb(0) };
+        if self.current[p as usize] != 0 {
+            PadColor::Novation(self.current[p as usize])
+        } else if self.held_count(p) != 0 {
+            PadColor::Rgb(0xffffff)
+        } else if self.preview[p as usize] != 0 {
+            PadColor::Novation(self.preview[p as usize])
+        } else if self.external[p as usize] {
+            PadColor::Rgb(0xffffff)
+        } else if (p as i16 - self.transpose()).rem_euclid(12) == 0 {
+            PadColor::Rgb(0xff4090)
+        } else if matches!((p as i16 - self.transpose()).rem_euclid(12), 2 | 4 | 5 | 7 | 9 | 11) {
+            PadColor::Rgb(0x1050d0)
+        } else {
+            PadColor::Rgb(0x101024)
+        }
+    }
+
+    fn receive_feedback(&mut self, event: MidiEvent) -> bool {
+        if event.port != MidiPort::Midi || event.data1 > 127 || event.data2 > 127 {
+            return false;
+        }
+        let value = match event.status & 0xf0 {
+            0x90 => event.data2,
+            0x80 => 0,
+            _ => return false,
+        };
+        let channel = event.status & 0x0f;
+        match channel {
+            0 => self.external[event.data1 as usize] = value != 0,
+            1 => self.preview[event.data1 as usize] = value,
+            2 => self.current[event.data1 as usize] = value,
+            3 | 4 => {
+                let Some(slot) = Self::slot(event.data1) else { return false };
+                if channel == 3 {
+                    self.pad_preview[slot] = value;
+                } else {
+                    self.pad_current[slot] = value;
+                }
+            }
+            // Channels 2–5 are reserved for display; channels 6–16 retain
+            // the previous selected-channel feedback behavior.
+            _ if channel == self.channel => self.external[event.data1 as usize] = value != 0,
+            _ => return false,
+        }
+        true
+    }
+
     fn redraw(&self) {
         if self.channel_view {
             for i in 0..16u8 {
@@ -65,14 +140,10 @@ impl CustomNoteApp {
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                let color = match Self::pitch(index, self.transpose()) {
-                    None => 0,
-                    Some(p) if self.held_count(p) != 0 || self.external[p as usize] => 0xffffff,
-                    Some(p) if (p as i16 - self.transpose()).rem_euclid(12) == 0 => 0xff4090,
-                    Some(p) if matches!((p as i16 - self.transpose()).rem_euclid(12), 2 | 4 | 5 | 7 | 9 | 11) => 0x1050d0,
-                    Some(_) => 0x101024,
-                };
-                led::set(index, color);
+                match self.color(index) {
+                    PadColor::Rgb(rgb) => led::set(index, rgb),
+                    PadColor::Novation(color) => led::novation(index, color),
+                }
             }
         }
         // Physical navigation: top 91/92 = left/right, side 80/70 = up/down.
@@ -92,6 +163,7 @@ impl CustomNoteApp {
             _ => return,
         };
         if self.arrows[pair * 2 + side] == pressed { return; }
+        let previous_transpose = self.transpose();
         self.arrows[pair * 2 + side] = pressed;
         if self.arrows[pair * 2] && self.arrows[pair * 2 + 1] {
             if !self.reset_latch[pair] {
@@ -108,6 +180,9 @@ impl CustomNoteApp {
                 if pair == 0 { self.octaves += step / 12; }
                 else { self.semitones += step; }
             }
+        }
+        if previous_transpose != self.transpose() {
+            self.clear_pad_feedback();
         }
         self.redraw();
     }
@@ -132,10 +207,19 @@ impl CustomNoteApp {
 }
 
 impl App for CustomNoteApp {
-    fn on_enter(&mut self) { self.redraw(); }
+    fn on_enter(&mut self) {
+        self.external.fill(false);
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
+        self.redraw();
+    }
     fn on_exit(&mut self) {
         self.release_all();
         self.external = [false; 128];
+        self.preview.fill(0);
+        self.current.fill(0);
+        self.clear_pad_feedback();
         self.arrows = [false; 4];
         self.reset_latch = [false; 2];
         self.channel_view = false;
@@ -149,7 +233,10 @@ impl App for CustomNoteApp {
                 _ => None,
             };
             if let Some(channel) = channel {
-                if self.channel != channel { self.external = [false; 128]; }
+                if self.channel != channel {
+                    self.external = [false; 128];
+                    self.clear_pad_feedback();
+                }
                 self.channel = channel;
                 self.redraw();
             }
@@ -179,11 +266,7 @@ impl App for CustomNoteApp {
         self.redraw();
     }
     fn on_midi(&mut self, event: MidiEvent) {
-        if event.port != MidiPort::Midi || event.status & 0x0f != self.channel { return; }
-        if matches!(event.status & 0xf0, 0x80 | 0x90) && event.data1 < 128 {
-            self.external[event.data1 as usize] = event.status & 0xf0 == 0x90 && event.data2 != 0;
-            self.redraw();
-        }
+        if self.receive_feedback(event) && !self.channel_view { self.redraw(); }
     }
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
         let Some(slot) = Self::slot(event.index) else { return; };
@@ -199,7 +282,13 @@ impl App for CustomNoteApp {
 
 #[cfg(test)]
 mod tests {
-    use super::CustomNoteApp as C;
+    use super::{CustomNoteApp as C, PadColor};
+    use crate::app::{App, MidiEvent};
+    use crate::sys::midi::MidiPort;
+
+    fn midi(port: MidiPort, status: u8, index: u8, value: u8) -> MidiEvent {
+        MidiEvent { port, status, data1: index, data2: value }
+    }
 
     #[test]
     fn fixed_layout_and_range() {
@@ -223,5 +312,97 @@ mod tests {
         assert_eq!(C::pitch(15, app.transpose()), Some(pitch + 12));
         app.held[C::slot(15).unwrap()] = None;
         assert_eq!(app.held_count(pitch), 1);
+    }
+
+    #[test]
+    fn custom_pitch_and_pad_layers_are_independent_on_overlapping_pads() {
+        let mut app = C::new();
+        let pitch = C::pitch(15, 0).unwrap();
+        assert_eq!(C::pitch(71, 0), Some(pitch));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x90, pitch, 100)));
+        assert_eq!(app.color(15), PadColor::Rgb(0xffffff));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x91, pitch, 13)));
+        assert_eq!(app.color(71), PadColor::Novation(13));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x92, pitch, 42)));
+        assert_eq!(app.color(15), PadColor::Novation(42));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x93, 71, 5)));
+        assert_eq!(app.color(15), PadColor::Novation(42));
+        assert_eq!(app.color(71), PadColor::Novation(5));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x94, 15, 127)));
+        assert_eq!(app.color(15), PadColor::Novation(127));
+        assert_eq!(app.color(71), PadColor::Novation(5));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x84, 15, 0)));
+        assert_eq!(app.color(15), PadColor::Novation(42));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x83, 71, 0)));
+        assert_eq!(app.color(71), PadColor::Novation(42));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x82, pitch, 0)));
+        assert_eq!(app.color(15), PadColor::Novation(13));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x81, pitch, 0)));
+        assert_eq!(app.color(15), PadColor::Rgb(0xffffff));
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x80, pitch, 0)));
+        assert_ne!(app.color(15), PadColor::Rgb(0xffffff));
+    }
+
+    #[test]
+    fn custom_pad_feedback_only_accepts_grid_and_does_not_hide_local_press() {
+        let mut app = C::new();
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                assert!(app.receive_feedback(midi(MidiPort::Midi, 0x93, index, 1)));
+                assert_eq!(app.color(index), PadColor::Novation(1));
+            }
+        }
+        for index in 0..=127 {
+            if C::slot(index).is_none() {
+                assert!(!app.receive_feedback(midi(MidiPort::Midi, 0x94, index, 1)));
+            }
+        }
+        for event in [
+            midi(MidiPort::Daw, 0x94, 11, 10),
+            midi(MidiPort::Midi, 0x95, 11, 10),
+            midi(MidiPort::Midi, 0xb4, 11, 10),
+            midi(MidiPort::Midi, 0x94, 11, 128),
+        ] {
+            assert!(!app.receive_feedback(event));
+        }
+        app.held[0] = C::pitch(11, 0);
+        assert_eq!(app.color(11), PadColor::Rgb(0xffffff));
+        app.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 127));
+        assert_eq!(app.color(11), PadColor::Novation(127));
+        app.held[0] = None;
+        app.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 0));
+        assert_eq!(app.color(11), PadColor::Novation(1));
+    }
+
+    #[test]
+    fn custom_feedback_clears_pad_layers_on_transpose_and_all_on_exit() {
+        let mut app = C::new();
+        app.receive_feedback(midi(MidiPort::Midi, 0x92, 48, 12));
+        app.receive_feedback(midi(MidiPort::Midi, 0x93, 11, 13));
+        app.clear_pad_feedback(); // arrow() clears this when the offset changes.
+        assert_eq!(app.color(11), PadColor::Novation(12));
+        app.octaves = 1;
+        assert_ne!(app.color(11), PadColor::Novation(12));
+        app.octaves = 0;
+        assert_eq!(app.color(11), PadColor::Novation(12));
+        app.receive_feedback(midi(MidiPort::Midi, 0x94, 11, 21));
+        app.on_exit();
+        assert_eq!(app.pad_current[0], 0);
+        assert_eq!(app.pad_preview[0], 0);
+        assert_ne!(app.color(11), PadColor::Novation(12));
+    }
+
+    #[test]
+    fn custom_selected_channel_feedback_keeps_channels_six_to_sixteen_only() {
+        let mut app = C::new();
+        app.channel = 6; // ch7 retains the old selected-channel feedback.
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x96, 48, 99)));
+        assert!(app.external[48]);
+        app.channel = 3; // ch4 is reserved for pad feedback.
+        assert!(!app.receive_feedback(midi(MidiPort::Midi, 0x93, 49, 99)));
+        assert!(!app.external[49]);
+        assert!(app.receive_feedback(midi(MidiPort::Midi, 0x93, 11, 99)));
+        assert_eq!(app.pad_preview[0], 99);
     }
 }
