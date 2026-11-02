@@ -1,13 +1,13 @@
 # Launchpad Pro MK3: 固定Custom配列＋Note Mode 実装リスト
 
-**対象はPro MK3実機。このブランチには固定CustomモードのUSB MIDI試作があるが、純正互換ファームウェアやDIN対応版ではない。実機書き込み・動作確認は未実施。** 上流 `code` の `3f5e3538973df842fb53fca83c8caec177467be7` を基点とし、Launchpad X用の感度試作やNote Modeは取り込まない。
+**対象はPro MK3実機。この共通ブランチには固定CustomモードのUSB MIDI試作があるが、純正互換ファームウェアやDIN対応版ではない。実機書き込み・動作確認は未実施。** Pro MK3向け実装の元ブランチは上流 `code` の `3f5e3538973df842fb53fca83c8caec177467be7` を基点とする。統合後はLaunchpad XのNote Modeも同じソースツリーにあるが、両機種のNote実装は別モジュールで、X専用の予告／現在色プロトコルはPro MK3には未対応。
 
 ### 実装済みの範囲（試作）
 
 - 固定Customノート配列・ド＝ピンク／音階内＝青／音階外＝暗色、USB MIDIのベロシティとAftertouch、同音ノートの重複押下、押下時音程を保持するNote Off、受信USBノートの同音パッド点灯。チャンネルは初期値1、Shift＋Customから下2行で1～16を選択可能（保存は未実装）。
 - Custom物理ボタン（96）または既存Setupの14番パッドから選択可能。Custom中はSessionボタン（93）で既存DAWモードへ戻る。移調は上（80）下（70）・左（91）右（92）、各ペア同時押しでその方向だけリセット。モード退出時は演奏中のノートを停止する。
 - Noteボタン（94）で独立したNote Modeに入り、Shift＋Noteで設定画面を開く。Chromatic／Scale、16スケール、ルート、重複配置（sequential／2～5 finger）、MIDIチャンネル1～16、USBノート／Aftertouch、モード退出時のNote Offを実装。既存Setupの24番パッドからも選択できる。**これは純正の全挙動を再現したものではない**（スケールの個別音程や配置の実機照合、設定保存、ドラムレイアウト・Ableton自動切替は未実装／未検証）。
-- **未実装**：DIN入出力、その他の純正モード・設定。現在の起動時動作も純正Liveとは異なる。現行のUSB送信ドライバをDIN送信として扱わないこと。`.github/workflows/pro-mk3-check.yml` は該当ブランチのGitHub-hostedランナーでPro MK3だけをビルドし、成功した場合のみ検証前の実験用`.syx`をActions artifactとして保存する。Release公開・自動書き込みはしない。
+- **未実装**：DIN入出力、その他の純正モード・設定。現在の起動時動作も純正Liveとは異なる。現行のUSB送信ドライバをDIN送信として扱わないこと。共通ブランチでは `.github/workflows/x-pro-mk3-check.yml` がXとPro MK3を別々にビルドし、検証前の実験用`.syx`をActions artifactとして保存する。Release公開・自動書き込みはしない。
 
 ## 参照資料
 
@@ -42,8 +42,8 @@
 
 ## 実験用ファームウェアを入れる前に
 
-- この作業ツリーの変更は未pushで、GitHub Actionsはまだ動いていない。現時点でこの変更を含む書き込み用ファイルは存在しない。上流のReleaseや公式CoreFW Webインストーラーのファイルはこの試作とは別物。
+- forkのActions artifactを使う場合は、実行のソースSHAと対象機種（Pro MK3）を照合すること。上流のReleaseや公式CoreFW Webインストーラーのファイルはこの試作とは別物。
 - 上流サイトはCoreFW 1.2.1への更新とPro MK3のシリアル番号確認・修復を強く推奨している。このブランチは1.2.0基点なので、書き込み前に[上流の注意](https://fw.anthonyhfm.dev/)と[修復ページ](https://fw.anthonyhfm.dev/repair)を確認し、復旧経路を確保する。
-- 自分のforkのこのブランチへ変更をpushして `.github/workflows/pro-mk3-check.yml` の成功を確認したら、実行結果の `pro-mk3-experimental-UNVERIFIED` artifactから `core-launchpad-pro-mk3.syx` を取得し、同梱の `SHA256SUMS.txt` と照合する。Actions成功は実機安全性の保証ではない。上流の `Release Firmware` は全機種Release公開・タグ作成を行うため本件では使わない。
+- forkの `code` ブランチで `.github/workflows/x-pro-mk3-check.yml` の**Pro MK3ジョブ**成功を確認したら、その実行の `lppmk3-<ソースSHA>-UNVERIFIED` artifact内の `core-launchpad-pro-mk3.syx` と `core-launchpad-pro-mk3.manifest.json` を照合する。この統合用artifactには旧Pro MK3単体workflowの `SHA256SUMS.txt` はないため、manifestのSHA-256値と実ファイルを照合する。Actions成功は実機安全性の保証ではない。上流の `Release Firmware` は全機種Release公開・タグ作成を行うため本件では使わない。
 - 書き込む場合はWindows PCでUSB接続を外し、**Pro MK3本体のSetupボタンを押しながら**接続してブートローダーメニューに入る（[Novation公式Setupガイド](https://userguides.novationmusic.com/hc/en-gb/articles/25494545308306-Using-the-Launchpad-Pro-MK3-s-Setup-page#bootloader-menu)）。上流 `readme.md` のCapture MIDI長押しは機種一般向けの記述であり、Pro MK3では採用しない。ブートローダーのMIDI出力ポートを確認してから、ダウンロードしたこの `.syx` を `tools/flash.py` などのSysEx送信ツールで送る。DAW/MIDI演奏ポートや他機種用ファイルを選択しない。WindowsでPythonツールを使う場合は `python -m pip install mido python-rtmidi`、`python tools/flash.py <ダウンロードしたsyxのパス>`。ローカルRustビルドは不要。
 - 公式ファームウェアへの復旧手順・シリアル番号・DIN端子の動作は未検証。**それらを確認できない場合はまだ書き込まない。**
