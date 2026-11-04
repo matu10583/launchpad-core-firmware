@@ -3,7 +3,7 @@
 
 use crate::app::{AftertouchEvent, App, MidiEvent, SurfaceEvent};
 use crate::app::guide::{self, Command as GuideCommand, Guide};
-use crate::app::performance::apply_velocity_curve;
+use crate::app::performance::apply_velocity_settings;
 use crate::driver;
 use crate::sys::{led, settings};
 use crate::sys::midi::MidiPort;
@@ -232,7 +232,7 @@ impl App for CustomNoteApp {
             self.held[slot] = Some(pitch);
             if !already_held {
                 let velocity = settings::with(|s| if s.velocity_enabled != 0 {
-                    apply_velocity_curve(s.velocity_curve, event.value).max(1)
+                    apply_velocity_settings(s, event.value).max(1)
                 } else { 127 });
                 driver::send_midi(MidiPort::Midi, &[0x90 | self.channel, pitch, velocity]);
             }

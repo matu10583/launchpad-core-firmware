@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Pro MK3 Note mode (standalone USB MIDI). Drum Rack detection needs DAW integration.
 
-use crate::app::performance::apply_velocity_curve;
+use crate::app::performance::apply_velocity_settings;
 use crate::app::{AftertouchEvent, App, MidiEvent, SurfaceEvent};
 use crate::app::guide::{self, Command as GuideCommand, Guide};
 use crate::driver;
@@ -273,7 +273,7 @@ impl App for NoteApp {
             self.held[slot] = Some(pitch);
             if first {
                 let velocity = settings::with(|s| if s.velocity_enabled != 0 {
-                    apply_velocity_curve(s.velocity_curve, event.value).max(1)
+                    apply_velocity_settings(s, event.value).max(1)
                 } else { 127 });
                 driver::send_midi(MidiPort::Midi, &[0x90 | self.channel, pitch, velocity]);
             }

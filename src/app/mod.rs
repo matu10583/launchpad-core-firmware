@@ -18,6 +18,7 @@ pub mod palette_editor;
 pub mod performance;
 pub mod programmer;
 pub mod setup;
+pub mod velocity;
 
 pub use crate::sys::midi::MidiPort;
 pub use apptrait::App;

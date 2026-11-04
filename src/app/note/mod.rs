@@ -6,7 +6,7 @@ mod transpose;
 
 use crate::app::apptrait::App;
 use crate::app::events::{AftertouchEvent, MidiEvent, SurfaceEvent};
-use crate::app::performance::apply_velocity_curve;
+use crate::app::performance::apply_velocity_settings;
 use crate::driver;
 use crate::sys::led;
 use crate::sys::midi::MidiPort;
@@ -281,7 +281,7 @@ impl App for NoteApp {
             }
             let Some(note) = note_for(self.preset, event.index, self.transpose.total()) else { return };
             let velocity = settings::with(|s| {
-                if s.velocity_enabled == 0 { 127 } else { apply_velocity_curve(s.velocity_curve, event.value) }
+                if s.velocity_enabled == 0 { 127 } else { apply_velocity_settings(s, event.value) }
             });
             let already_sounding = self.active.contains(&Some(note));
             self.active[slot] = Some(note);

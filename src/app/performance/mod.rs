@@ -65,7 +65,7 @@ impl App for PerformanceApp {
         let velocity = settings::with(|settings| {
             if event.pressed {
                 if settings.velocity_enabled != 0 {
-                    apply_velocity_curve(settings.velocity_curve, event.value)
+                    apply_velocity_settings(settings, event.value).max(1)
                 } else {
                     127
                 }
@@ -183,6 +183,13 @@ pub(crate) fn apply_velocity_curve(curve: u8, value: u8) -> u8 {
         2 => velocity_curve_high(value),
         _ => value.min(127),
     }
+}
+
+pub(crate) fn apply_velocity_settings(settings: &settings::Settings, value: u8) -> u8 {
+    crate::app::velocity::tune(
+        apply_velocity_curve(settings.velocity_curve, value),
+        settings.velocity_gain, settings.velocity_soft,
+    )
 }
 
 fn velocity_curve_low(value: u8) -> u8 {

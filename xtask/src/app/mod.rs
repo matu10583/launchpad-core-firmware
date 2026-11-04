@@ -10,8 +10,12 @@ pub use events::{AftertouchEvent, MidiEvent, SurfaceEvent};
 pub enum AppId { Note }
 
 pub mod performance {
-    pub(crate) fn apply_velocity_curve(_curve: u8, value: u8) -> u8 { value }
+    pub(crate) fn apply_velocity_settings(_settings: &crate::sys::settings::Settings, value: u8) -> u8 { value }
 }
+
+#[path = "../../../src/app/velocity.rs"]
+pub mod velocity;
+pub mod setup;
 
 #[path = "../../../src/app/note/mod.rs"]
 pub mod note;

@@ -16,6 +16,12 @@ const PALETTE_OFFSET: usize = SETTINGS_DATA_OFFSET + BASIC_SETTINGS_SIZE;
 const CUSTOM_PALETTE_BYTES: usize = 3 * 3 * 128;
 const SETTINGS_WIRE_SIZE: usize = PALETTE_OFFSET + CUSTOM_PALETTE_BYTES;
 
+// The original two velocity bytes used only values 0..2. Mark the extended
+// encoding in bit 7 of the enabled byte, preserving the wire size and CRC.
+pub const VELOCITY_GAIN_DEFAULT: u8 = 17; // 49 + 3*17 = 100 percent
+pub const VELOCITY_SOFT_DEFAULT: u8 = 28; // neutral low-end offset
+pub const VELOCITY_FINE_STEPS: u8 = 56;
+
 #[cfg(feature = "launchpad-pro-mk3")]
 const _: () = assert!(
     SETTINGS_WIRE_SIZE
@@ -27,6 +33,8 @@ pub struct Settings {
     pub brightness: u8,
     pub velocity_enabled: u8,
     pub velocity_curve: u8,
+    pub velocity_gain: u8,
+    pub velocity_soft: u8,
     pub aftertouch_mode: u8,
     pub aftertouch_curve: u8,
     pub palette: u8,
@@ -40,6 +48,8 @@ impl Settings {
             brightness: 0,
             velocity_enabled: 0,
             velocity_curve: 0,
+            velocity_gain: VELOCITY_GAIN_DEFAULT,
+            velocity_soft: VELOCITY_SOFT_DEFAULT,
             aftertouch_mode: 0,
             aftertouch_curve: 0,
             palette: 0,
@@ -53,6 +63,8 @@ impl Settings {
             brightness: 7,
             velocity_enabled: 0,
             velocity_curve: 1,
+            velocity_gain: VELOCITY_GAIN_DEFAULT,
+            velocity_soft: VELOCITY_SOFT_DEFAULT,
             aftertouch_mode: 0,
             aftertouch_curve: 0,
             palette: 0,
@@ -71,6 +83,8 @@ impl Settings {
         if self.velocity_curve > 2 {
             self.velocity_curve = 1;
         }
+        self.velocity_gain = self.velocity_gain.min(VELOCITY_FINE_STEPS - 1);
+        self.velocity_soft = self.velocity_soft.min(VELOCITY_FINE_STEPS - 1);
         if self.aftertouch_mode > 2 {
             self.aftertouch_mode = 0;
         }
@@ -117,8 +131,10 @@ impl Settings {
         out[..SETTINGS_MAGIC.len()].copy_from_slice(&SETTINGS_MAGIC);
         out[SETTINGS_CRC_OFFSET..SETTINGS_DATA_OFFSET].fill(0);
         out[SETTINGS_DATA_OFFSET] = self.brightness;
-        out[SETTINGS_DATA_OFFSET + 1] = self.velocity_enabled;
-        out[SETTINGS_DATA_OFFSET + 2] = self.velocity_curve;
+        let (enabled, curve) = crate::app::velocity::encode_settings(
+            self.velocity_enabled, self.velocity_curve, self.velocity_gain, self.velocity_soft);
+        out[SETTINGS_DATA_OFFSET + 1] = enabled;
+        out[SETTINGS_DATA_OFFSET + 2] = curve;
         out[SETTINGS_DATA_OFFSET + 3] = self.aftertouch_mode;
         out[SETTINGS_DATA_OFFSET + 4] = self.aftertouch_curve;
         out[SETTINGS_DATA_OFFSET + 5] = self.palette;
@@ -140,8 +156,9 @@ impl Settings {
         let mut settings = Self::defaults();
 
         settings.brightness = input[SETTINGS_DATA_OFFSET];
-        settings.velocity_enabled = input[SETTINGS_DATA_OFFSET + 1];
-        settings.velocity_curve = input[SETTINGS_DATA_OFFSET + 2];
+        (settings.velocity_enabled, settings.velocity_curve,
+         settings.velocity_gain, settings.velocity_soft) = crate::app::velocity::decode_settings(
+            input[SETTINGS_DATA_OFFSET + 1], input[SETTINGS_DATA_OFFSET + 2]);
         settings.aftertouch_mode = input[SETTINGS_DATA_OFFSET + 3];
         settings.aftertouch_curve = input[SETTINGS_DATA_OFFSET + 4];
         settings.palette = input[SETTINGS_DATA_OFFSET + 5];
