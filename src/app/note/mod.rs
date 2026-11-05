@@ -2,10 +2,10 @@
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
 #[cfg(test)]
-mod layout;
+pub(crate) mod layout;
 mod stock_layout;
 pub(crate) mod wire;
-mod transpose;
+pub(crate) mod transpose;
 
 use crate::app::apptrait::App;
 use crate::app::events::{AftertouchEvent, MidiEvent, SurfaceEvent};
