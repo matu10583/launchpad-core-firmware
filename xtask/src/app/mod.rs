@@ -23,3 +23,5 @@ pub mod note;
 pub mod pro_note;
 #[path = "../../../src/app/custom_note/mod.rs"]
 pub mod custom_note;
+#[path = "../../../src/app/x_custom.rs"]
+pub mod x_custom;

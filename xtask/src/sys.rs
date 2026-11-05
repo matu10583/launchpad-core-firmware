@@ -7,6 +7,7 @@ pub mod led {
     pub fn clear() {}
     pub fn set(_index: u8, _color: u32) {}
     pub fn set_raw(_index: u8, _color: u32) {}
+    pub fn pulse_raw(_index: u8, _color: u32) {}
     pub fn novation(_index: u8, _color: u8) {}
 }
 
@@ -19,6 +20,11 @@ pub mod settings {
         pub velocity_curve: u8,
         pub velocity_gain: u8,
         pub velocity_soft: u8,
+        pub x_note_scale_mode: u8,
+        pub x_note_scale: u8,
+        pub x_note_root: u8,
+        pub x_note_overlap: u8,
+        pub x_note_channel: u8,
         pub aftertouch_mode: u8,
     }
 
@@ -26,6 +32,8 @@ pub mod settings {
         static SETTINGS: RefCell<Settings> = const { RefCell::new(Settings {
             velocity_enabled: 0, velocity_curve: 1, velocity_gain: 17,
             velocity_soft: 28, aftertouch_mode: 0,
+            x_note_scale_mode: 0, x_note_scale: 0, x_note_root: 0,
+            x_note_overlap: 5, x_note_channel: 0,
         }) };
     }
 
@@ -36,4 +44,6 @@ pub mod settings {
     pub fn update(f: impl FnOnce(&mut Settings)) {
         SETTINGS.with(|s| f(&mut s.borrow_mut()));
     }
+
+    pub fn save() {}
 }

@@ -1,5 +1,7 @@
 # Launchpad X Note Mode（固定プリセット試作）
 
+> これは旧版の3プリセット式Note操作の記録です。現行の作業ブランチは [LAUNCHPAD-X-STANDALONE-RECREATION.md](LAUNCHPAD-X-STANDALONE-RECREATION.md) を参照してください。
+
 この実装は `launchpad-x-note-mode-v3` から fork の `code` に統合した Launchpad X 専用機能です。起動アニメーション後に Note Mode を開きます。押下開始 `112`、解放 `8` は実機で試した感度版から変更していません。ベロシティの出力計算も改善しています。配列の本体編集・保存はまだありません。**追加した予告／現在音の色指定は実機未検証**です。
 
 Ableton Liveが接続していてもNote Modeを優先するため、Note Mode・起動アニメーション・Setup中にLiveから届くDAW/MIDIポートの自動レイアウト切替は無視します。手動でDAWモードを選んだ場合のみDAW連携を受け付け、DAWモードからもNoteボタン（96）でNote Modeへ戻れます。`LPX (MIDI)` ポートのNote Mode用ch1/ch2/ch3受信表示は引き続き有効です。

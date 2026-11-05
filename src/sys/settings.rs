@@ -35,6 +35,16 @@ pub struct Settings {
     pub velocity_curve: u8,
     pub velocity_gain: u8,
     pub velocity_soft: u8,
+    #[cfg(feature = "launchpad-x")]
+    pub x_note_scale_mode: u8,
+    #[cfg(feature = "launchpad-x")]
+    pub x_note_scale: u8,
+    #[cfg(feature = "launchpad-x")]
+    pub x_note_root: u8,
+    #[cfg(feature = "launchpad-x")]
+    pub x_note_overlap: u8,
+    #[cfg(feature = "launchpad-x")]
+    pub x_note_channel: u8,
     pub aftertouch_mode: u8,
     pub aftertouch_curve: u8,
     pub palette: u8,
@@ -50,6 +60,16 @@ impl Settings {
             velocity_curve: 0,
             velocity_gain: VELOCITY_GAIN_DEFAULT,
             velocity_soft: VELOCITY_SOFT_DEFAULT,
+            #[cfg(feature = "launchpad-x")]
+            x_note_scale_mode: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_scale: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_root: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_overlap: 5,
+            #[cfg(feature = "launchpad-x")]
+            x_note_channel: 0,
             aftertouch_mode: 0,
             aftertouch_curve: 0,
             palette: 0,
@@ -65,6 +85,16 @@ impl Settings {
             velocity_curve: 1,
             velocity_gain: VELOCITY_GAIN_DEFAULT,
             velocity_soft: VELOCITY_SOFT_DEFAULT,
+            #[cfg(feature = "launchpad-x")]
+            x_note_scale_mode: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_scale: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_root: 0,
+            #[cfg(feature = "launchpad-x")]
+            x_note_overlap: 5,
+            #[cfg(feature = "launchpad-x")]
+            x_note_channel: 0,
             aftertouch_mode: 0,
             aftertouch_curve: 0,
             palette: 0,
@@ -85,6 +115,14 @@ impl Settings {
         }
         self.velocity_gain = self.velocity_gain.min(VELOCITY_FINE_STEPS - 1);
         self.velocity_soft = self.velocity_soft.min(VELOCITY_FINE_STEPS - 1);
+        #[cfg(feature = "launchpad-x")]
+        {
+            self.x_note_scale_mode = self.x_note_scale_mode.min(1);
+            self.x_note_scale = self.x_note_scale.min(15);
+            self.x_note_root = self.x_note_root.min(11);
+            if !matches!(self.x_note_overlap, 0 | 2..=5) { self.x_note_overlap = 5; }
+            self.x_note_channel = self.x_note_channel.min(15);
+        }
         if self.aftertouch_mode > 2 {
             self.aftertouch_mode = 0;
         }
@@ -139,6 +177,22 @@ impl Settings {
         out[SETTINGS_DATA_OFFSET + 4] = self.aftertouch_curve;
         out[SETTINGS_DATA_OFFSET + 5] = self.palette;
         out[SETTINGS_DATA_OFFSET + 6] = self.mirror_enabled;
+        #[cfg(feature = "launchpad-x")]
+        {
+            // The marker in the formerly unused high bit of aftertouch_curve
+            // distinguishes new images from old ones. Wire size and CRC stay
+            // unchanged; lower bits of all original settings remain intact.
+            let (brightness, mode, curve) = crate::app::note::wire::pack(
+                self.brightness, self.aftertouch_mode, self.aftertouch_curve,
+                crate::app::note::wire::NotePreferences {
+                    scale_mode: self.x_note_scale_mode, scale: self.x_note_scale,
+                    root: self.x_note_root, overlap: self.x_note_overlap,
+                    channel: self.x_note_channel,
+                });
+            out[SETTINGS_DATA_OFFSET] = brightness;
+            out[SETTINGS_DATA_OFFSET + 3] = mode;
+            out[SETTINGS_DATA_OFFSET + 4] = curve;
+        }
 
         let mut pos = PALETTE_OFFSET;
         for slot in self.custom_palette {
@@ -163,6 +217,19 @@ impl Settings {
         settings.aftertouch_curve = input[SETTINGS_DATA_OFFSET + 4];
         settings.palette = input[SETTINGS_DATA_OFFSET + 5];
         settings.mirror_enabled = input[SETTINGS_DATA_OFFSET + 6];
+        #[cfg(feature = "launchpad-x")]
+        if let Some((brightness, mode, curve, prefs)) = crate::app::note::wire::unpack(
+            settings.brightness, settings.aftertouch_mode, settings.aftertouch_curve)
+        {
+            settings.brightness = brightness;
+            settings.aftertouch_mode = mode;
+            settings.aftertouch_curve = curve;
+            settings.x_note_scale_mode = prefs.scale_mode;
+            settings.x_note_scale = prefs.scale;
+            settings.x_note_root = prefs.root;
+            settings.x_note_overlap = prefs.overlap;
+            settings.x_note_channel = prefs.channel;
+        }
 
         if input.len() >= SETTINGS_WIRE_SIZE {
             let mut pos = PALETTE_OFFSET;

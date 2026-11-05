@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
+#[cfg(test)]
 mod layout;
+mod stock_layout;
+pub(crate) mod wire;
 mod transpose;
 
 use crate::app::apptrait::App;
@@ -12,7 +15,7 @@ use crate::sys::led;
 use crate::sys::midi::MidiPort;
 use crate::sys::settings;
 
-use layout::{base_color, grid_slot, note_for, Preset};
+use stock_layout::grid_slot;
 use transpose::Transpose;
 use crate::app::guide::{self, Command as GuideCommand, Guide};
 
@@ -23,7 +26,11 @@ enum PadColor {
 }
 
 pub struct NoteApp {
-    preset: Preset,
+    scale_mode: bool,
+    scale: u8,
+    root: u8,
+    overlap: u8,
+    channel: u8,
     transpose: Transpose,
     up_held: bool,
     down_held: bool,
@@ -39,7 +46,11 @@ pub struct NoteApp {
 impl NoteApp {
     pub const fn new() -> Self {
         Self {
-            preset: Preset::Chromatic,
+            scale_mode: false,
+            scale: 0,
+            root: 0,
+            overlap: 5,
+            channel: 0,
             transpose: Transpose::new(),
             up_held: false,
             down_held: false,
@@ -51,12 +62,33 @@ impl NoteApp {
         }
     }
 
+    /// Holding Note opens the on-device layout selector; a short press only
+    /// selects Note mode. The private pitch-guide lease is not reset here.
+    pub fn show_settings(&mut self) {
+        if !self.choosing {
+            self.release_all();
+            self.choosing = true;
+            self.draw();
+        }
+    }
+
+    pub fn settings_active(&self) -> bool { self.choosing }
+
+    pub fn close_settings(&mut self) {
+        if self.choosing { self.choosing = false; settings::save(); self.draw(); }
+    }
+
+    fn note_at(&self, index: u8) -> Option<u8> {
+        stock_layout::note(index, self.root, self.scale, self.overlap,
+            self.scale_mode, self.transpose.total())
+    }
+
     fn release_all(&mut self) {
         // One Note On per pitch, even when two pads map to the same pitch.
         for slot in 0..self.active.len() {
             if let Some(note) = self.active[slot].take() {
                 if !self.active.contains(&Some(note)) {
-                    driver::send_midi(MidiPort::Midi, &[0x90, note, 0]);
+                    driver::send_midi(MidiPort::Midi, &[0x90 | self.channel, note, 0]);
                 }
             }
         }
@@ -82,11 +114,11 @@ impl NoteApp {
                 // 64 validity bits packed into ten 7-bit bytes, then 64 pitches.
                 let mut payload = [0u8; 77];
                 payload[0] = 0x42;
-                payload[1] = self.preset.slot();
+                payload[1] = u8::from(self.scale_mode);
                 payload[2] = (self.transpose.total() + 64) as u8;
                 for slot in 0..64 {
                     let index = (slot / 8 + 1) as u8 * 10 + (slot % 8 + 1) as u8;
-                    if let Some(pitch) = note_for(self.preset, index, self.transpose.total()) {
+                    if let Some(pitch) = self.note_at(index) {
                         payload[3 + slot / 7] |= 1 << (slot % 7);
                         payload[13 + slot] = pitch;
                     }
@@ -121,7 +153,7 @@ impl NoteApp {
     }
 
     fn pad_color(&self, note: u8) -> PadColor {
-        let played_color = if (note as i16 - self.transpose.total()).rem_euclid(12) == 0 {
+        let played_color = if (note as i16 - self.root as i16 - self.transpose.total()).rem_euclid(12) == 0 {
             PadColor::Rgb(0xffa2ea)
         } else {
             PadColor::Rgb(0x9beaff)
@@ -129,7 +161,9 @@ impl NoteApp {
         if self.active.contains(&Some(note)) {
             played_color
         } else {
-            PadColor::Rgb(base_color(note, self.transpose.total()))
+            PadColor::Rgb(stock_layout::color(note,
+                (self.root as i16 + self.transpose.total()).rem_euclid(12) as u8,
+                self.scale, self.scale_mode))
         }
     }
 
@@ -137,14 +171,14 @@ impl NoteApp {
         let Some(slot) = grid_slot(index) else { return PadColor::Rgb(0) };
         if let Some(color) = self.guide.pad_color(
             index,
-            note_for(self.preset, index, self.transpose.total()),
+            self.note_at(index),
             self.active[slot].is_some(),
             |side, pitch| guide::side_has_pitch(side, pitch,
-                |pad| note_for(self.preset, pad, self.transpose.total())),
+                |pad| self.note_at(pad)),
         ) {
             return PadColor::Novation(color);
         }
-        note_for(self.preset, index, self.transpose.total())
+        self.note_at(index)
             .map_or(PadColor::Rgb(0), |note| self.pad_color(note))
     }
 
@@ -159,7 +193,7 @@ impl NoteApp {
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                if note_for(self.preset, index, self.transpose.total()) == Some(pitch) {
+                if self.note_at(index) == Some(pitch) {
                     Self::set_pad(index, self.grid_color(index));
                 }
             }
@@ -172,12 +206,7 @@ impl NoteApp {
             for col in 1..=8 {
                 let index = row * 10 + col;
                 let color = if self.choosing {
-                    if row == 1 && col <= 3 {
-                        let slot = col - 1;
-                        PadColor::Rgb(if self.preset.slot() == slot { 0xff47ce } else { 0x239fd1 })
-                    } else {
-                        PadColor::Rgb(0)
-                    }
+                    PadColor::Rgb(self.settings_color(index))
                 } else {
                     self.grid_color(index)
                 };
@@ -201,8 +230,56 @@ impl NoteApp {
             led::set_raw(index, color);
         }
         led::set_raw(95, 0x401010); // Hold Session to enter Setup.
-        led::set_raw(96, 0xff47ce); // Note mode.
-        led::set_raw(97, if self.choosing { 0xff47ce } else { 0x239fd1 }); // Preset selector.
+        if self.choosing { led::pulse_raw(96, 0x10ff10); }
+        else { led::set_raw(96, 0xff47ce); }
+        led::set_raw(97, 0x16434c); // Custom mode (handled by the host).
+    }
+
+    fn settings_color(&self, index: u8) -> u32 {
+        match index {
+            71..=75 => if (if index == 71 { 0 } else { index - 70 }) == self.overlap {
+                0xffffff
+            } else { 0x41415a },
+            78 => if self.scale_mode { 0x10ff10 } else { 0x551010 },
+            61..=64 | 51..=58 => {
+                let root = if index >= 61 { index - 61 + 8 } else { index - 51 };
+                if root == self.root { 0xff47ce }
+                else if stock_layout::intervals(self.scale).contains(&((root + 12 - self.root) % 12)) {
+                    0x239fd1
+                } else { 0x181818 }
+            }
+            41..=48 | 31..=38 => {
+                let scale = if index >= 41 { index - 41 } else { index - 31 + 8 };
+                if scale == self.scale { 0xffffff } else { 0x183454 }
+            }
+            21..=28 | 11..=18 => {
+                let channel = if index >= 21 { index - 21 } else { index - 11 + 8 };
+                if channel == self.channel { 0xffffff } else { 0x444213 }
+            }
+            _ => 0,
+        }
+    }
+
+    fn select_setting(&mut self, index: u8) {
+        match index {
+            71..=75 => self.overlap = if index == 71 { 0 } else { index - 70 },
+            78 => self.scale_mode = !self.scale_mode,
+            61..=64 => self.root = index - 61 + 8,
+            51..=58 => self.root = index - 51,
+            41..=48 => self.scale = index - 41,
+            31..=38 => self.scale = (index - 31 + 8).min(stock_layout::SCALE_COUNT - 1),
+            21..=28 => self.channel = index - 21,
+            11..=18 => self.channel = index - 11 + 8,
+            _ => return,
+        }
+        settings::update(|s| {
+            s.x_note_scale_mode = u8::from(self.scale_mode);
+            s.x_note_scale = self.scale;
+            s.x_note_root = self.root;
+            s.x_note_overlap = self.overlap;
+            s.x_note_channel = self.channel;
+        });
+        self.draw();
     }
 
     fn change_transpose(&mut self, next: Transpose) {
@@ -242,6 +319,9 @@ impl NoteApp {
 
 impl App for NoteApp {
     fn on_enter(&mut self) {
+        (self.scale_mode, self.scale, self.root, self.overlap, self.channel) =
+            settings::with(|s| (s.x_note_scale_mode != 0, s.x_note_scale,
+                s.x_note_root, s.x_note_overlap, s.x_note_channel));
         self.guide.end();
         self.choosing = false;
         self.up_held = false;
@@ -252,6 +332,7 @@ impl App for NoteApp {
     }
 
     fn on_exit(&mut self) {
+        if self.choosing { settings::save(); }
         self.release_all();
         self.guide.end();
         self.choosing = false;
@@ -264,14 +345,7 @@ impl App for NoteApp {
     fn on_surface(&mut self, event: SurfaceEvent) {
         let Some(slot) = grid_slot(event.index) else { return };
         if self.choosing {
-            if event.pressed && event.index / 10 == 1 {
-                if let Some(preset) = Preset::from_slot(event.index % 10 - 1) {
-                    self.release_all();
-                    self.preset = preset;
-                    self.choosing = false;
-                    self.draw();
-                }
-            }
+            if event.pressed { self.select_setting(event.index); }
             return;
         }
 
@@ -279,19 +353,19 @@ impl App for NoteApp {
             if self.active[slot].is_some() {
                 return;
             }
-            let Some(note) = note_for(self.preset, event.index, self.transpose.total()) else { return };
+            let Some(note) = self.note_at(event.index) else { return };
             let velocity = settings::with(|s| {
                 if s.velocity_enabled == 0 { 127 } else { apply_velocity_settings(s, event.value) }
             });
             let already_sounding = self.active.contains(&Some(note));
             self.active[slot] = Some(note);
             if !already_sounding {
-                driver::send_midi(MidiPort::Midi, &[0x90, note, velocity.max(1)]);
+                driver::send_midi(MidiPort::Midi, &[0x90 | self.channel, note, velocity.max(1)]);
             }
             self.refresh_pitch(note);
         } else if let Some(note) = self.active[slot].take() {
             if !self.active.contains(&Some(note)) {
-                driver::send_midi(MidiPort::Midi, &[0x90, note, 0]);
+                driver::send_midi(MidiPort::Midi, &[0x90 | self.channel, note, 0]);
             }
             self.refresh_pitch(note);
         }
@@ -300,8 +374,6 @@ impl App for NoteApp {
     fn on_surface_raw(&mut self, event: SurfaceEvent) {
         match event.index {
             91..=94 => self.transpose_button(event.index, event.pressed),
-            96 if event.pressed && self.choosing => { self.choosing = false; self.draw(); }
-            97 if event.pressed => { self.release_all(); self.choosing = !self.choosing; self.draw(); }
             _ => {}
         }
     }
@@ -311,8 +383,8 @@ impl App for NoteApp {
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
         let Some(note) = grid_slot(event.index).and_then(|slot| self.active[slot]) else { return };
         match settings::with(|s| s.aftertouch_mode) {
-            1 => driver::send_midi(MidiPort::Midi, &[0xa0, note, event.value]),
-            2 => driver::send_midi(MidiPort::Midi, &[0xd0, event.value]),
+            1 => driver::send_midi(MidiPort::Midi, &[0xa0 | self.channel, note, event.value]),
+            2 => driver::send_midi(MidiPort::Midi, &[0xd0 | self.channel, event.value]),
             _ => {}
         }
     }
@@ -330,6 +402,32 @@ mod tests {
 
     fn midi(port: MidiPort, status: u8, note: u8, velocity: u8) -> MidiEvent {
         MidiEvent { port, status, data1: note, data2: velocity }
+    }
+
+    #[test]
+    fn note_settings_select_scale_root_overlap_and_midi_channel() {
+        let mut app = NoteApp::new();
+        app.show_settings();
+        for index in [78, 42, 53, 71, 12] {
+            app.on_surface(SurfaceEvent { index, pressed: true, value: 100 });
+        }
+        assert!(app.scale_mode);
+        assert_eq!((app.scale, app.root, app.overlap, app.channel), (1, 2, 0, 9));
+        app.close_settings();
+        assert_eq!(app.note_at(11), Some(50));
+        app.on_surface(SurfaceEvent { index: 11, pressed: true, value: 70 });
+        app.on_surface(SurfaceEvent { index: 11, pressed: false, value: 0 });
+        assert_eq!(crate::driver::take_midi(), vec![
+            (MidiPort::Midi, vec![0x99, 50, 127]),
+            (MidiPort::Midi, vec![0x99, 50, 0]),
+        ]);
+        app.on_exit();
+        app.on_enter();
+        assert_eq!((app.scale, app.root, app.overlap, app.channel), (1, 2, 0, 9));
+        settings::update(|s| {
+            s.x_note_scale_mode = 0; s.x_note_scale = 0;
+            s.x_note_root = 0; s.x_note_overlap = 5; s.x_note_channel = 0;
+        });
     }
 
     #[test]
@@ -387,14 +485,14 @@ mod tests {
     #[test]
     fn overlapping_pads_keep_local_color_until_both_are_released() {
         let mut app = NoteApp::new();
-        let pitch = note_for(Preset::Chromatic, 15, 0).unwrap();
-        assert_eq!(note_for(Preset::Chromatic, 71, 0), Some(pitch));
-        app.active[4] = Some(pitch);
-        app.active[48] = Some(pitch);
-        app.active[4] = None;
-        assert_eq!(app.grid_color(15), PadColor::Rgb(0xffa2ea));
-        app.active[48] = None;
-        assert_eq!(app.grid_color(15), PadColor::Rgb(base_color(pitch, 0)));
+        let pitch = app.note_at(16).unwrap();
+        assert_eq!(app.note_at(21), Some(pitch));
+        app.active[5] = Some(pitch);
+        app.active[8] = Some(pitch);
+        app.active[5] = None;
+        assert_eq!(app.grid_color(16), PadColor::Rgb(0x9beaff));
+        app.active[8] = None;
+        assert_eq!(app.grid_color(16), PadColor::Rgb(stock_layout::color(pitch, 0, 0, false)));
     }
 
     #[test]
@@ -403,20 +501,20 @@ mod tests {
         app.guide.begin();
         app.guide.set(0, 0, 48, 13);
         assert_eq!(app.grid_color(11), PadColor::Novation(13));
-        assert_ne!(app.grid_color(15), PadColor::Novation(13));
+        assert_ne!(app.grid_color(12), PadColor::Novation(13));
         for _ in 0..4 { app.transpose = app.transpose.shifted(-1).unwrap(); }
-        assert_eq!(app.grid_color(21), PadColor::Novation(13));
-        app.preset = Preset::Classic;
+        assert_eq!(app.grid_color(15), PadColor::Novation(13));
+        app.overlap = 0;
         app.transpose = app.transpose.without_semitones();
-        assert_eq!(app.grid_color(41), PadColor::Novation(13));
-        app.active[24] = Some(48);
-        assert_ne!(app.grid_color(41), PadColor::Novation(13));
-        app.active[24] = None;
+        assert_eq!(app.grid_color(11), PadColor::Novation(13));
+        app.active[0] = Some(48);
+        assert_ne!(app.grid_color(11), PadColor::Novation(13));
+        app.active[0] = None;
         app.guide.set(1, 0, 48, 21);
-        assert_eq!(app.grid_color(41), PadColor::Novation(21));
+        assert_eq!(app.grid_color(11), PadColor::Novation(21));
         app.on_exit();
         assert!(!app.guide.active());
-        assert_ne!(app.grid_color(41), PadColor::Novation(21));
+        assert_ne!(app.grid_color(11), PadColor::Novation(21));
     }
 
     #[test]
@@ -432,15 +530,15 @@ mod tests {
         app.active[0] = None;
         app.guide.set(1, 1, 48, 0);
         app.guide.set(0, 1, 48, 0);
-        app.guide.set(0, 0, 72, 13);
-        assert_eq!(app.grid_color(71), PadColor::Novation(13));
-        assert_ne!(app.grid_color(15), PadColor::Novation(13)); // 72 also on left
-        app.guide.set(1, 1, 72, 31);
-        assert_eq!(app.grid_color(15), PadColor::Novation(31));
-        app.guide.set(1, 1, 72, 0);
+        app.guide.set(0, 0, 53, 13);
+        assert_eq!(app.grid_color(21), PadColor::Novation(13));
+        assert_ne!(app.grid_color(16), PadColor::Novation(13)); // 53 also on right
+        app.guide.set(1, 1, 53, 31);
+        assert_eq!(app.grid_color(16), PadColor::Novation(31));
+        app.guide.set(1, 1, 53, 0);
         app.transpose = app.transpose.shifted(12).unwrap();
-        assert_eq!(app.grid_color(41), PadColor::Novation(13)); // left pitch 72 follows transpose
+        assert_ne!(app.grid_color(21), PadColor::Novation(13)); // pitch 53 is no longer at 21
         app.guide.end();
-        assert_ne!(app.grid_color(41), PadColor::Novation(13));
+        assert_ne!(app.grid_color(11), PadColor::Novation(13));
     }
 }

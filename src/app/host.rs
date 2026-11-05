@@ -11,6 +11,8 @@ use crate::app::palette_editor::PaletteEditorApp;
 use crate::app::performance::PerformanceApp;
 #[cfg(feature = "launchpad-x")]
 use crate::app::note::NoteApp;
+#[cfg(feature = "launchpad-x")]
+use crate::app::x_custom::CustomApp;
 use crate::app::programmer::ProgrammerApp;
 use crate::app::setup::SetupApp;
 use crate::app::{AftertouchEvent, App, AppId, MidiEvent, SurfaceEvent};
@@ -37,6 +39,8 @@ pub struct AppHost {
     custom_note: CustomNoteApp,
     #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
     note: NoteApp,
+    #[cfg(feature = "launchpad-x")]
+    x_custom: CustomApp,
     programmer: ProgrammerApp,
     daw: DawApp,
     pending_host_switch: Option<AppId>,
@@ -45,6 +49,10 @@ pub struct AppHost {
     setup_hold_ticks: u16,
     #[cfg(feature = "no-setup-btn")]
     setup_hold_active: bool,
+    #[cfg(feature = "launchpad-x")]
+    note_hold_ticks: u16,
+    #[cfg(feature = "launchpad-x")]
+    note_hold_active: bool,
     #[cfg(not(feature = "no-setup-btn"))]
     setup_button_ticks: u16,
     #[cfg(not(feature = "no-setup-btn"))]
@@ -64,6 +72,8 @@ impl AppHost {
             custom_note: CustomNoteApp::new(),
             #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
             note: NoteApp::new(),
+            #[cfg(feature = "launchpad-x")]
+            x_custom: CustomApp::new(),
             programmer: ProgrammerApp::new(),
             daw: DawApp::new(),
             pending_host_switch: None,
@@ -73,6 +83,10 @@ impl AppHost {
             setup_hold_ticks: 0,
             #[cfg(feature = "no-setup-btn")]
             setup_hold_active: false,
+            #[cfg(feature = "launchpad-x")]
+            note_hold_ticks: 0,
+            #[cfg(feature = "launchpad-x")]
+            note_hold_active: false,
             #[cfg(not(feature = "no-setup-btn"))]
             setup_button_ticks: 0,
             #[cfg(not(feature = "no-setup-btn"))]
@@ -91,6 +105,8 @@ impl AppHost {
             AppId::CustomNote => &mut self.custom_note,
             #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
             AppId::Note => &mut self.note,
+            #[cfg(feature = "launchpad-x")]
+            AppId::XCustom => &mut self.x_custom,
             AppId::Programmer => &mut self.programmer,
             AppId::Daw => &mut self.daw,
             AppId::PaletteEditor => &mut self.palette_editor,
@@ -128,10 +144,27 @@ impl AppHost {
     #[inline(never)]
     pub fn route_surface_event(&mut self, event: SurfaceEvent) {
         #[cfg(feature = "launchpad-x")]
-        if event.index == 96 && matches!(self.current, AppId::Performance | AppId::Programmer | AppId::Daw) {
+        if event.index == 96 && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer) {
             if event.pressed {
-                self.switch(AppId::Note);
+                if self.current != AppId::Note { self.switch(AppId::Note); }
+                self.note_hold_ticks = 0;
+                self.note_hold_active = true;
+            } else {
+                if self.note_hold_active && self.note_hold_ticks < SETUP_HOLD_TICKS
+                    && self.current == AppId::Note && self.note.settings_active() {
+                    self.note.close_settings();
+                }
+                self.note_hold_active = false;
             }
+            return;
+        }
+
+        #[cfg(feature = "launchpad-x")]
+        if event.index == 97 && event.pressed
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            if self.current != AppId::XCustom { self.switch(AppId::XCustom); }
+            else { self.x_custom.select_default(); }
             return;
         }
 
@@ -296,6 +329,14 @@ impl AppHost {
 
     #[inline(never)]
     pub fn route_tick_event(&mut self) {
+        #[cfg(feature = "launchpad-x")]
+        if self.note_hold_active && self.current == AppId::Note {
+            self.note_hold_ticks = self.note_hold_ticks.saturating_add(1);
+            if self.note_hold_ticks >= SETUP_HOLD_TICKS {
+                self.note_hold_active = false;
+                self.note.show_settings();
+            }
+        }
         #[cfg(feature = "no-setup-btn")]
         self.tick_setup_hold_button();
 
