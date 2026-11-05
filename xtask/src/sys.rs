@@ -46,12 +46,11 @@ pub mod led {
 pub mod settings {
     use std::cell::RefCell;
 
-    pub const VELOCITY_FINE_STEPS: u8 = 56;
     pub struct Settings {
         pub velocity_enabled: u8,
-        pub velocity_curve: u8,
-        pub velocity_gain: u8,
-        pub velocity_soft: u8,
+        pub velocity_floor: u8,
+        pub velocity_point_a: u8,
+        pub velocity_point_b: u8,
         pub x_note_scale_mode: u8,
         pub x_note_scale: u8,
         pub x_note_root: u8,
@@ -62,8 +61,8 @@ pub mod settings {
 
     std::thread_local! {
         static SETTINGS: RefCell<Settings> = const { RefCell::new(Settings {
-            velocity_enabled: 0, velocity_curve: 1, velocity_gain: 17,
-            velocity_soft: 28, aftertouch_mode: 0,
+            velocity_enabled: 0, velocity_floor: 5, velocity_point_a: 63,
+            velocity_point_b: 63, aftertouch_mode: 0,
             x_note_scale_mode: 0, x_note_scale: 0, x_note_root: 0,
             x_note_overlap: 5, x_note_channel: 0,
         }) };

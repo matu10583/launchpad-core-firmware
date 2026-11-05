@@ -25,7 +25,7 @@ impl App for ProgrammerApp {
     fn on_surface(&mut self, event: SurfaceEvent) {
         let velocity = settings::with(|s| if !event.pressed { 0 }
             else if s.velocity_enabled == 0 { 127 }
-            else { crate::app::velocity::tune(event.value.min(127), s.velocity_gain, s.velocity_soft).max(1) });
+            else { crate::app::performance::apply_velocity_settings(s, event.value.min(127)).max(1) });
 
         driver::send_midi(MidiPort::Midi, &[0x90, event.index, velocity]);
     }

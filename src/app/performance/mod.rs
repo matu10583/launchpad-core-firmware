@@ -177,53 +177,10 @@ impl App for PerformanceApp {
     fn on_tick(&mut self) {}
 }
 
-pub(crate) fn apply_velocity_curve(curve: u8, value: u8) -> u8 {
-    match curve {
-        0 => velocity_curve_low(value),
-        2 => velocity_curve_high(value),
-        _ => value.min(127),
-    }
-}
-
 pub(crate) fn apply_velocity_settings(settings: &settings::Settings, value: u8) -> u8 {
     crate::app::velocity::tune(
-        apply_velocity_curve(settings.velocity_curve, value),
-        settings.velocity_gain, settings.velocity_soft,
+        value,
+        settings.velocity_point_a, settings.velocity_point_b,
+        settings.velocity_floor,
     )
-}
-
-fn velocity_curve_low(value: u8) -> u8 {
-    if value == 0 {
-        return 0;
-    }
-
-    let x = value.min(127) as u16;
-    let y = (x * x + 63) / 127;
-    y.min(127) as u8
-}
-
-fn velocity_curve_high(value: u8) -> u8 {
-    if value == 0 {
-        return 0;
-    }
-
-    let mut n = (value.min(127) as u16) * 127;
-    let mut res = 0u16;
-    let mut bit = 1u16 << 14;
-
-    while bit > n {
-        bit >>= 2;
-    }
-
-    while bit != 0 {
-        if n >= res + bit {
-            n -= res + bit;
-            res = (res >> 1) + bit;
-        } else {
-            res >>= 1;
-        }
-        bit >>= 2;
-    }
-
-    res.min(127) as u8
 }

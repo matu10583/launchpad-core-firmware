@@ -8,7 +8,7 @@ pub fn map(norm: u16, start: u16) -> u8 {
         return 1;
     }
     let delta = (norm - start) as u32;
-    (24 + delta * 103 / 1100).min(127) as u8
+    (1 + delta * 126 / 1100).min(127) as u8
 }
 
 #[cfg(test)]
@@ -17,11 +17,19 @@ mod tests {
 
     #[test]
     fn light_to_strong_press_has_a_usable_range() {
-        assert_eq!(map(112, 112), 24);
-        assert_eq!(map(300, 112), 41);
-        assert_eq!(map(600, 112), 69);
-        assert_eq!(map(900, 112), 97);
+        assert_eq!(map(112, 112), 1);
+        assert_eq!(map(300, 112), 22);
+        assert_eq!(map(600, 112), 56);
+        assert_eq!(map(900, 112), 91);
         assert_eq!(map(1212, 112), 127);
         assert_eq!(map(4095, 112), 127);
+    }
+
+    #[test]
+    fn selectable_floor_keeps_x_sensor_start_and_top_endpoint() {
+        use crate::app::velocity::{self, NO_POINT};
+        assert_eq!(velocity::tune(map(112, 112), NO_POINT, NO_POINT, 0), 1);
+        assert_eq!(velocity::tune(map(112, 112), NO_POINT, NO_POINT, 5), 24);
+        assert_eq!(velocity::tune(map(1212, 112), NO_POINT, NO_POINT, 5), 127);
     }
 }

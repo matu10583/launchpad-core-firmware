@@ -16,11 +16,8 @@ const PALETTE_OFFSET: usize = SETTINGS_DATA_OFFSET + BASIC_SETTINGS_SIZE;
 const CUSTOM_PALETTE_BYTES: usize = 3 * 3 * 128;
 const SETTINGS_WIRE_SIZE: usize = PALETTE_OFFSET + CUSTOM_PALETTE_BYTES;
 
-// The original two velocity bytes used only values 0..2. Mark the extended
-// encoding in bit 7 of the enabled byte, preserving the wire size and CRC.
-pub const VELOCITY_GAIN_DEFAULT: u8 = 17; // 49 + 3*17 = 100 percent
-pub const VELOCITY_SOFT_DEFAULT: u8 = 28; // neutral low-end offset
-pub const VELOCITY_FINE_STEPS: u8 = 56;
+// The two existing velocity bytes hold two Bezier points, floor, and toggle.
+pub const VELOCITY_POINT_NONE: u8 = crate::app::velocity::NO_POINT;
 
 #[cfg(feature = "launchpad-pro-mk3")]
 const _: () = assert!(
@@ -32,9 +29,9 @@ const _: () = assert!(
 pub struct Settings {
     pub brightness: u8,
     pub velocity_enabled: u8,
-    pub velocity_curve: u8,
-    pub velocity_gain: u8,
-    pub velocity_soft: u8,
+    pub velocity_floor: u8, // floor selection 0..7
+    pub velocity_point_a: u8, // first Bezier point, 63 = absent
+    pub velocity_point_b: u8, // second Bezier point, 63 = absent
     #[cfg(feature = "launchpad-x")]
     pub x_note_scale_mode: u8,
     #[cfg(feature = "launchpad-x")]
@@ -57,9 +54,9 @@ impl Settings {
         Self {
             brightness: 0,
             velocity_enabled: 0,
-            velocity_curve: 0,
-            velocity_gain: VELOCITY_GAIN_DEFAULT,
-            velocity_soft: VELOCITY_SOFT_DEFAULT,
+            velocity_floor: 0,
+            velocity_point_a: VELOCITY_POINT_NONE,
+            velocity_point_b: VELOCITY_POINT_NONE,
             #[cfg(feature = "launchpad-x")]
             x_note_scale_mode: 0,
             #[cfg(feature = "launchpad-x")]
@@ -82,9 +79,9 @@ impl Settings {
         Self {
             brightness: 7,
             velocity_enabled: 0,
-            velocity_curve: 1,
-            velocity_gain: VELOCITY_GAIN_DEFAULT,
-            velocity_soft: VELOCITY_SOFT_DEFAULT,
+            velocity_floor: if cfg!(feature = "launchpad-x") { 5 } else { 0 },
+            velocity_point_a: VELOCITY_POINT_NONE,
+            velocity_point_b: VELOCITY_POINT_NONE,
             #[cfg(feature = "launchpad-x")]
             x_note_scale_mode: 0,
             #[cfg(feature = "launchpad-x")]
@@ -107,14 +104,12 @@ impl Settings {
         if self.brightness > 7 {
             self.brightness = 7;
         }
-        if self.velocity_enabled > 2 {
+        if self.velocity_enabled > 1 {
             self.velocity_enabled = 0;
         }
-        if self.velocity_curve > 2 {
-            self.velocity_curve = 1;
-        }
-        self.velocity_gain = self.velocity_gain.min(VELOCITY_FINE_STEPS - 1);
-        self.velocity_soft = self.velocity_soft.min(VELOCITY_FINE_STEPS - 1);
+        self.velocity_floor = self.velocity_floor.min(7);
+        self.velocity_point_a = self.velocity_point_a.min(VELOCITY_POINT_NONE);
+        self.velocity_point_b = self.velocity_point_b.min(VELOCITY_POINT_NONE);
         #[cfg(feature = "launchpad-x")]
         {
             self.x_note_scale_mode = self.x_note_scale_mode.min(1);
@@ -169,10 +164,10 @@ impl Settings {
         out[..SETTINGS_MAGIC.len()].copy_from_slice(&SETTINGS_MAGIC);
         out[SETTINGS_CRC_OFFSET..SETTINGS_DATA_OFFSET].fill(0);
         out[SETTINGS_DATA_OFFSET] = self.brightness;
-        let (enabled, curve) = crate::app::velocity::encode_settings(
-            self.velocity_enabled, self.velocity_curve, self.velocity_gain, self.velocity_soft);
-        out[SETTINGS_DATA_OFFSET + 1] = enabled;
-        out[SETTINGS_DATA_OFFSET + 2] = curve;
+        let (velocity_low, velocity_high) = crate::app::velocity::encode_settings(
+            self.velocity_enabled, self.velocity_floor, self.velocity_point_a, self.velocity_point_b);
+        out[SETTINGS_DATA_OFFSET + 1] = velocity_low;
+        out[SETTINGS_DATA_OFFSET + 2] = velocity_high;
         out[SETTINGS_DATA_OFFSET + 3] = self.aftertouch_mode;
         out[SETTINGS_DATA_OFFSET + 4] = self.aftertouch_curve;
         out[SETTINGS_DATA_OFFSET + 5] = self.palette;
@@ -210,8 +205,8 @@ impl Settings {
         let mut settings = Self::defaults();
 
         settings.brightness = input[SETTINGS_DATA_OFFSET];
-        (settings.velocity_enabled, settings.velocity_curve,
-         settings.velocity_gain, settings.velocity_soft) = crate::app::velocity::decode_settings(
+        (settings.velocity_enabled, settings.velocity_floor,
+         settings.velocity_point_a, settings.velocity_point_b) = crate::app::velocity::decode_settings(
             input[SETTINGS_DATA_OFFSET + 1], input[SETTINGS_DATA_OFFSET + 2]);
         settings.aftertouch_mode = input[SETTINGS_DATA_OFFSET + 3];
         settings.aftertouch_curve = input[SETTINGS_DATA_OFFSET + 4];
