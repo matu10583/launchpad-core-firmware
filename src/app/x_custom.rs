@@ -97,27 +97,37 @@ impl CustomApp {
         }
     }
 
-    fn draw(&self) {
-        led::clear();
+    fn draw_pad(&self, index: u8) {
+        let Some(pitch) = self.pitch(index) else { return };
+        if self.slot >= 2 {
+            led::novation(index, self.feedback[pitch as usize]);
+        } else {
+            let color = if self.held_pitch(pitch) { 0xffffff }
+                else if self.slot == 0 {
+                    let degree = (pitch as i16 - self.transpose.total()).rem_euclid(12);
+                    if degree == 0 { 0xff47ce }
+                    else if matches!(degree, 2 | 4 | 5 | 7 | 9 | 11) {
+                        if index % 10 <= 4 { 0x239fd1 } else { 0x12cfd0 }
+                    } else { 0 }
+                }
+                else if pitch % 12 == 0 { 0xff47ce } else { 0x239fd1 };
+            led::set(index, color);
+        }
+    }
+
+    fn refresh_pitch(&self, pitch: u8) {
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
-                let Some(pitch) = self.pitch(index) else { continue };
-                if self.slot >= 2 {
-                    led::novation(index, self.feedback[pitch as usize]);
-                } else {
-                    let color = if self.held_pitch(pitch) { 0xffffff }
-                        else if self.slot == 0 {
-                            let degree = (pitch as i16 - self.transpose.total()).rem_euclid(12);
-                            if degree == 0 { 0xff47ce }
-                            else if matches!(degree, 2 | 4 | 5 | 7 | 9 | 11) {
-                                if col <= 4 { 0x239fd1 } else { 0x12cfd0 }
-                            } else { 0x555555 }
-                        }
-                        else if pitch % 12 == 0 { 0xff47ce } else { 0x239fd1 };
-                    led::set(index, color);
-                }
+                if self.pitch(index) == Some(pitch) { self.draw_pad(index); }
             }
+        }
+    }
+
+    fn draw(&self) {
+        led::clear();
+        for row in 1..=8 {
+            for col in 1..=8 { self.draw_pad(row * 10 + col); }
         }
         for (n, index) in [89, 79, 69, 59].into_iter().enumerate() {
             led::set_raw(index, if self.slot as usize == n { 0x10ff10 } else { 0x16434c });
@@ -179,7 +189,7 @@ impl App for CustomApp {
         if (event.pressed && !already_sounding) || (!event.pressed && !self.held_pitch(pitch)) {
             driver::send_midi(MidiPort::Midi, &[0x90, pitch, velocity]);
         }
-        if self.slot < 2 { self.draw(); }
+        if self.slot < 2 { self.refresh_pitch(pitch); }
     }
     fn on_surface_raw(&mut self, event: SurfaceEvent) {
         if (91..=94).contains(&event.index) {
@@ -199,8 +209,11 @@ impl App for CustomApp {
         if (event.status & 0xf0) == 0x90 || (event.status & 0xf0) == 0x80 {
             let pitch = event.data1 as usize;
             if pitch >= 128 { return; }
-            self.feedback[pitch] = if (event.status & 0xf0) == 0x80 { 0 } else { event.data2 };
-            self.draw();
+            let color = if (event.status & 0xf0) == 0x80 { 0 } else { event.data2 };
+            if self.feedback[pitch] != color {
+                self.feedback[pitch] = color;
+                self.refresh_pitch(event.data1);
+            }
         }
     }
     fn on_aftertouch(&mut self, event: AftertouchEvent) {
@@ -222,6 +235,7 @@ impl App for CustomApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::led::{self, Update};
     fn event(index: u8, pressed: bool) -> SurfaceEvent {
         SurfaceEvent { index, pressed, value: 70 }
     }
@@ -293,5 +307,41 @@ mod tests {
             (MidiPort::Midi, vec![0x90, 48, 127]),
             (MidiPort::Midi, vec![0x90, 48, 0]),
         ]);
+    }
+
+    #[test]
+    fn chromatic_black_keys_are_dark_and_pressed_pitch_only_is_redrawn() {
+        let mut app = CustomApp::new();
+        app.on_enter();
+        let initial = led::take_updates();
+        assert!(initial.contains(&Update::Set(12, 0))); // C sharp
+        assert!(initial.contains(&Update::Set(16, 0))); // right-hand C sharp
+        assert!(initial.contains(&Update::Set(11, 0xff47ce)));
+        assert!(initial.contains(&Update::Set(15, 0xff47ce)));
+
+        app.on_surface(event(12, true));
+        assert_eq!(led::take_updates(), [Update::Set(12, 0xffffff)]);
+        app.on_surface(event(12, false));
+        assert_eq!(led::take_updates(), [Update::Set(12, 0)]);
+
+        app.on_surface(event(15, true));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xffffff), Update::Set(71, 0xffffff)]);
+        app.on_surface(event(15, false));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xff47ce), Update::Set(71, 0xff47ce)]);
+        crate::driver::take_midi();
+    }
+
+    #[test]
+    fn external_feedback_redraws_only_pads_with_matching_pitch() {
+        let mut app = CustomApp::new();
+        app.on_enter();
+        app.on_surface_raw(event(69, true)); // Custom 3, MIDI feedback
+        led::take_updates();
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x90, data1: 36, data2: 9 });
+        assert_eq!(led::take_updates(), [Update::Novation(11, 9)]);
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x90, data1: 36, data2: 9 });
+        assert!(led::take_updates().is_empty());
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x80, data1: 36, data2: 0 });
+        assert_eq!(led::take_updates(), [Update::Novation(11, 0)]);
     }
 }

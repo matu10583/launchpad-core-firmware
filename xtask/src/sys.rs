@@ -4,11 +4,43 @@ pub mod midi {
 }
 
 pub mod led {
-    pub fn clear() {}
-    pub fn set(_index: u8, _color: u32) {}
-    pub fn set_raw(_index: u8, _color: u32) {}
+    #[cfg(test)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Update { Clear, Set(u8, u32), Raw(u8, u32), Novation(u8, u8) }
+
+    #[cfg(test)]
+    std::thread_local! {
+        static UPDATES: std::cell::RefCell<Vec<Update>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(test)]
+    pub fn take_updates() -> Vec<Update> {
+        UPDATES.with(|updates| std::mem::take(&mut *updates.borrow_mut()))
+    }
+
+    pub fn clear() {
+        #[cfg(test)]
+        UPDATES.with(|updates| updates.borrow_mut().push(Update::Clear));
+    }
+    pub fn set(index: u8, color: u32) {
+        #[cfg(test)]
+        UPDATES.with(|updates| updates.borrow_mut().push(Update::Set(index, color)));
+        #[cfg(not(test))]
+        let _ = (index, color);
+    }
+    pub fn set_raw(index: u8, color: u32) {
+        #[cfg(test)]
+        UPDATES.with(|updates| updates.borrow_mut().push(Update::Raw(index, color)));
+        #[cfg(not(test))]
+        let _ = (index, color);
+    }
     pub fn pulse_raw(_index: u8, _color: u32) {}
-    pub fn novation(_index: u8, _color: u8) {}
+    pub fn novation(index: u8, color: u8) {
+        #[cfg(test)]
+        UPDATES.with(|updates| updates.borrow_mut().push(Update::Novation(index, color)));
+        #[cfg(not(test))]
+        let _ = (index, color);
+    }
 }
 
 pub mod settings {
