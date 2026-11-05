@@ -1,24 +1,24 @@
 # PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X / Pro MK3 練習ガイド試作
 
-**個人利用・非公開FW向けの試作仕様。FW生成物を公開GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ユーザーの指定により、ソースには私用IDの値を固定せず、TeamCityのビルド手順でのみ渡す。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来FWを公開する場合は、利用権のあるSysEx IDを取得し、ソース・仕様・アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**本変更の実機検証は未実施。**
+**Launchpad X / Pro MK3 ガイド試作仕様。** 通常ビルドでもWebと同じ`0x7D`を受信する。`CORE_GUIDE_SYSEX_ID`を指定した場合のみ別の1バイトIDに切り替わる（Web側のIDも合わせる必要がある）。**本変更の実機検証は未実施。**
 
 ## 受信先とバイト配置（**この私用試作内のみ**）
 
-USB `LPX (MIDI)`ではX Note Modeの全コマンド、X Custom 1～4の読み取り専用QUERY／GET_LAYOUT、USB `PRO MK3 (MIDI)`ではPro MK3のNoteまたは固定Custom Modeでのみ動く。DAWポートと他モードは対象外。すべての数字は十六進、値は7bit。フレームは必ず次の完全一致形式とする。
+USB `LPX (MIDI)`ではX Note／Custom 1～4、USB `PRO MK3 (MIDI)`ではPro MK3のNote／固定Custom Modeで動く。DAWポートと他モードは対象外。すべての数字は十六進、値は7bit。フレームは必ず次の完全一致形式とする。
 
 ```text
 F0 7D 43 46 57 model 01 cmd [payload] F7
    │  C  F  W  機種  v1
-   └ 個人・非公開試作に限定（公開用IDではない）
+   └ Webと同じデフォルトID
 ```
 
 `model=0C`はX、`0E`はPro MK3。機種の不一致は拒否。`src/app/guide.rs`で共通のパーサ・期限・左右別状態を管理し、各モードは自分の配列と移調を用いて描画する。Webは機種名判定やQUERYを前提にせず、時間再生では両モデルへコマンドを送信する。他機種宛のフレームはFWが無視し、待機モードのみGET_LAYOUT応答を使う（Webの実装は今回変更しない）。
 
-**ビルド時ID:** `src/app/guide.rs`には私用IDの値を固定せず、`CORE_GUIDE_SYSEX_ID`未指定ならガイドSysEx受信・応答を無効にする。私用FWのビルド時だけ2桁の16進IDを環境変数として指定する。`GITHUB_ACTIONS`下でID指定ビルドは拒否。TeamCityのビルド構成には環境パラメータとして指定し、ソース・スクリプト・ログに値を書かない。TeamCityの配布範囲とArtifactへのアクセス権を別途確認する。
+**ビルド時ID:** `CORE_GUIDE_SYSEX_ID`未指定なら`0x7D`。過去に登録されたビルド構成が別IDを指定している場合はその値が優先されるため、Webの`0x7D`と一致させるにはビルド構成の環境変数を解除する。既存FWの書き換えはユーザーが行う。
 
 | `cmd` | 送信payload | 動作 / 返答 |
 | --- | --- | --- |
-| `01` QUERY | なし | 読み取り専用。`41 capabilities mode active`（能力bit`01`左右ガイド、bit`02`レイアウト；旧方式のセッション中抑制bit`04`は廃止）。X NoteとPro Note／固定Customは`capabilities=03`、X Customは`02`（点灯操作不可）。`mode=01` Note / `02` Custom；X Customの`active=00`、それ以外は`00/01`。QUERYだけでは状態変更せず、Webの時間再生には必須ではない。 |
+| `01` QUERY | なし | 読み取り専用。`41 03 mode active`（能力bit`01`左右ガイド、bit`02`レイアウト）。全機種のNote／Customで`03`。`mode=01` Note / `02` Custom；`active=00/01`。QUERYだけでは状態変更せず、Webの時間再生には必須ではない。 |
 | `02` GET_LAYOUT | なし | 読み取り専用。X: `42 layout transpose+64 valid[10] pitches[64]`（全85バイト）。Xの`layout=00`Chromatic Note / `01`Scale Note / `02..05` Custom 1～4。Custom 1は現在の移調を返し、Custom 2～4はoffset 0。Pro MK3: `42 layout root scale overlap offset_low offset_high valid[10] pitches[64]`（全89バイト）。Proの`layout=02`は固定Custom、符号付きoffsetは`(offset+8192)`を下位・上位7bitに分けた値。8行×8列を下行左から上行右へ、slot0=11、slot7=18、slot8=21、slot63=88。`valid[slot/7]`のbit`slot%7`が1なら音程`pitches[slot]`有効、0ならpitch欄は0で無効。`valid[9]`のbit1～6は常に0。64バイトの音程は0～127（127も有効）。レイアウト照会は押下状態を変更しない。 |
 | `10` BEGIN | なし | ガイド状態を消し、5秒間のセッション開始。`50 10 01`を応答。 |
 | `11` KEEPALIVE | なし | セッション中のみ5秒へ更新し`50 11 01`を応答。アプリは2秒ごとに送る。 |
@@ -27,7 +27,7 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 
 返答も同じヘッダと終端を使用し、**各機種のUSB演奏用MIDIポートにのみ送信**。不正なID・モデル・版・長さ・データ（`80`以上）・未知コマンドは無視。`SET`は音や演奏MIDI出力を変更せず、押下パッドIDは送信しない。問い合わせのレスポンスは試作FW特有で、通常のDAW MIDIは変更しない。
 
-X Custom 1～4ではBEGIN／KEEPALIVE／END／SETを受け付けず応答もしない。点灯セッションはX Noteだけが保持し、Customへの切替時に終了する。既存X Noteの応答形式・レイアウト番号は変更しない。クライアントはX Customの新しいlayout値`02..05`と能力値`02`を認識し、未対応の古いFWでは照会がタイムアウトするものとして扱う。
+X Custom 1～4でもNoteと同じBEGIN／KEEPALIVE／END／SETの点灯セッションを持ち、モード退出で終了する。スロット切替時には保持したpitchごとのガイド色を新配列に再マップする。既存X Noteの応答形式・レイアウト番号は変更しない。Web側はXのlayout値`02..05`を認識する必要がある（現在は`preset<=2`のためCustom 2～4の応答を破棄）。X CustomのQUERY `mode=02`もWeb側のパーサで許可する。旧FWではCustomの点灯コマンドに応答しないため、新FWへ移行する。
 
 **アプリ移行上の注意:** 旧X専用仕様書の`valid[8]`はSysExデータの7-bit制約に反し、最上位ビットが立つ通常の配列でGET_LAYOUT応答が失敗するため、XとPro双方を`valid[10]`に修正した。Xの`model=0C`と送信コマンドは不変だが、**GET_LAYOUT応答の長さ・pitch開始位置は互換ではない**。アプリは85/89バイトを機種ごとに確認してからデコードし、旧応答を誤解釈しないこと。プロトコルは未配布の私用試作なので、この修正をv1の確定仕様とする。
 
@@ -35,7 +35,9 @@ X Custom 1～4ではBEGIN／KEEPALIVE／END／SETを受け付けず応答もし�
 
 左右×予告/現在×pitchを独立に保持する。同じpitchが同じ側の複数パッドにあるときは全て表示する。描画時に現在の配列と移調から64パッドの音程を再計算する。希望側にpitchがあれば希望側だけへ表示し、希望側に存在せず反対側にあれば反対側へフォールバックする（左右対称）。両側になければ表示しない。左右の同じパッドで衝突したら**現在 > 予告、同じレイヤーならそのパッド側の手 > 反対側からのフォールバック**。本体で押しているパッドの予告は隠し、現在は押下表示より優先。同じパッドを連続打鍵する際はアプリ側で現在を解除または予告色へ更新する（1個のLEDに2色は同時表示不可）。本体の配列・移調変更後もガイドのpitch状態は保持して再判定する。
 
-**X Note ModeとPro MK3 Note／固定CustomはSysExガイド専用。** 旧ch1～5のNote On/OffとProの選択チャンネル入力によるLEDフィードバックは廃止。BEGIN前・セッション中・END後・期限切れ後とも受信Note On/Offで点灯しない。演奏パッドのMIDI送信とチャンネル選択UIは維持。モード退出ではガイドを消去。USB切断通知に依存せず最後のSET/KEEPALIVEから5秒で自動終了・消灯する。Webは旧方式へのフォールバックを使わない。
+**X Note／CustomとPro MK3 Note／固定CustomでSysExガイドを使用可能。** X NoteとProの旧ch1～5／選択チャンネル入力によるLEDフィードバックは廃止。X Custom 3／4の既存通常MIDIフィードバックはガイド色より優先しない。演奏パッドのMIDI送信とProチャンネル選択UIは維持。モード退出ではガイドを消去。USB切断通知に依存せず最後のSET/KEEPALIVEから5秒で自動終了・消灯する。Webは旧方式へのフォールバックを使わない。
+
+**ローカル検証（現行変更）:** ID未指定の通常ビルドでX／Pro Mk3双方のreleaseリンク成功、ホストテスト55件成功。Xはガイド追加でFlashが溢れるため`[profile.release.package.core] opt-level="z"`を使用（周辺依存は従来の`opt-level=3`）。Webの`PrivateGuideProtocol.ts`は今回のFW作業では変更していない。X Custom 2～4の待機モードには同パーサのX `preset`型／値チェックを`layout=00..05`へ拡張し、`02..05`をCustom 1～4として解釈する変更が必須。X CustomのQUERY `mode=02`も受け入れる。旧FWの照会タイムアウトに対しては新FWへの更新が必要。
 
 ## 検証の限界
 

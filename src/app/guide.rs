@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Only a deliberately configured build may enable this optional SysEx protocol.
-// Do not set this ID in public CI or publish a build containing a private ID.
+// The v1 guide uses the same one-byte ID as the companion Web app by default.
+// An explicit build-time ID remains available for alternate private setups.
 const fn hex_digit(b: u8) -> u8 {
     match b {
         b'0'..=b'9' => b - b'0',
@@ -11,7 +11,7 @@ const fn hex_digit(b: u8) -> u8 {
 }
 const fn configured_id() -> Option<u8> {
     match option_env!("CORE_GUIDE_SYSEX_ID") {
-        None => None,
+        None => Some(0x7d),
         Some(value) => {
             let bytes = value.as_bytes();
             if bytes.len() != 2 { panic!("CORE_GUIDE_SYSEX_ID must be two hexadecimal digits"); }
@@ -21,15 +21,7 @@ const fn configured_id() -> Option<u8> {
         }
     }
 }
-// Public GitHub Actions builds must never embed an explicitly supplied ID.
-const _: () = assert!(option_env!("GITHUB_ACTIONS").is_none() ||
-                      option_env!("CORE_GUIDE_SYSEX_ID").is_none(),
-                      "Configured guide ID cannot run in public CI");
-#[cfg(not(test))]
 const MANUFACTURER_ID: Option<u8> = configured_id();
-// Host tests exercise framing even when the default firmware build disables it.
-#[cfg(test)]
-const MANUFACTURER_ID: Option<u8> = match configured_id() { Some(id) => Some(id), None => Some(1) };
 const HEADER: [u8; 3] = [b'C', b'F', b'W'];
 pub const MODEL_X: u8 = 0x0c;
 pub const MODEL_PRO_MK3: u8 = 0x0e;
@@ -214,6 +206,18 @@ pub fn side_has_pitch(side: usize, pitch: u8, mut note_for: impl FnMut(u8) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_build_uses_web_guide_id() {
+        if option_env!("CORE_GUIDE_SYSEX_ID").is_none() {
+            assert_eq!(configured_id(), Some(0x7d));
+            let mut frame = [0; 16];
+            let len = reply(&[0x02], MODEL_X, &mut frame).unwrap();
+            assert_eq!(frame[1], 0x7d);
+            assert_eq!(decode(&frame[..len], MODEL_X), Some(Command::Layout));
+            assert_eq!(decode(&frame[..len], MODEL_PRO_MK3), None);
+        }
+    }
 
     #[test]
     fn strict_envelope_and_command_validation() {

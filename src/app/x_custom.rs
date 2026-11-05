@@ -2,7 +2,7 @@
 //! Source-defined Launchpad X Custom 1–4 layouts.
 use crate::app::{AftertouchEvent, App, MidiEvent, SurfaceEvent};
 use crate::app::note::transpose::Transpose;
-use crate::app::guide::{self, Command as GuideCommand};
+use crate::app::guide::{self, Command as GuideCommand, Guide};
 use crate::driver;
 use crate::sys::{led, midi::MidiPort, settings};
 
@@ -31,6 +31,7 @@ pub struct CustomApp {
     slot: u8,
     held: [bool; 64],
     feedback: [u8; 128],
+    guide: Guide,
     transpose: Transpose,
     up_held: bool,
     down_held: bool,
@@ -40,7 +41,7 @@ pub struct CustomApp {
 
 impl CustomApp {
     pub const fn new() -> Self {
-        Self { slot: 0, held: [false; 64], feedback: [0; 128],
+        Self { slot: 0, held: [false; 64], feedback: [0; 128], guide: Guide::new(),
             transpose: Transpose::new(), up_held: false, down_held: false,
             left_held: false, right_held: false }
     }
@@ -53,29 +54,45 @@ impl CustomApp {
         self.draw();
     }
 
-    /// Custom only answers read-only queries. Note mode alone owns the
-    /// private guide's BEGIN/SET/END lease and its LED layers.
-    pub fn receive_guide_sysex(&self, data: &[u8]) -> bool {
+    /// Custom uses the same guide lease as Note, mapped to the selected slot.
+    pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
         let Some(command) = guide::decode(data, guide::MODEL_X) else { return false };
-        let mut response = [0u8; 96];
-        let payload = match command {
-            GuideCommand::Query => {
-                // Layout capability only; Custom has no private LED lease.
-                let payload = [0x41, 0x02, 2, 0];
-                if let Some(len) = guide::reply(&payload, guide::MODEL_X, &mut response) {
-                    driver::send_midi(MidiPort::Midi, &response[..len]);
-                }
-                return true;
+        match command {
+            GuideCommand::Query => self.guide_reply(&[0x41, 0x03, 2, self.guide.active() as u8]),
+            GuideCommand::Layout => {
+                let payload = guide::x_layout(2 + self.slot,
+                    if self.slot == 0 { self.transpose.total() } else { 0 },
+                    |index| self.pitch(index));
+                self.guide_reply(&payload);
             }
-            GuideCommand::Layout => guide::x_layout(2 + self.slot,
-                if self.slot == 0 { self.transpose.total() } else { 0 },
-                |index| self.pitch(index)),
-            _ => return false,
-        };
+            GuideCommand::Begin => {
+                self.guide.begin();
+                self.refresh_grid();
+                self.guide_reply(&[0x50, 0x10, 1]);
+            }
+            GuideCommand::Keepalive => {
+                if self.guide.active() {
+                    self.guide.renew();
+                    self.guide_reply(&[0x50, 0x11, 1]);
+                }
+            }
+            GuideCommand::End => {
+                self.guide.end();
+                self.refresh_grid();
+                self.guide_reply(&[0x50, 0x12, 0]);
+            }
+            GuideCommand::Set { layer, side, pitch, color } => {
+                if self.guide.set(layer, side, pitch, color) { self.refresh_pitch(pitch); }
+            }
+        }
+        true
+    }
+
+    fn guide_reply(&self, payload: &[u8]) {
+        let mut response = [0u8; 96];
         if let Some(len) = guide::reply(&payload, guide::MODEL_X, &mut response) {
             driver::send_midi(MidiPort::Midi, &response[..len]);
         }
-        true
     }
 
     fn pitch(&self, index: u8) -> Option<u8> {
@@ -125,6 +142,14 @@ impl CustomApp {
 
     fn draw_pad(&self, index: u8) {
         let Some(pitch) = self.pitch(index) else { return };
+        let row = index / 10;
+        let col = index % 10;
+        let held = self.held[((row - 1) * 8 + col - 1) as usize];
+        if let Some(color) = self.guide.pad_color(index, Some(pitch), held,
+            |side, note| guide::side_has_pitch(side, note, |pad| self.pitch(pad))) {
+            led::novation(index, color);
+            return;
+        }
         if self.slot >= 2 {
             led::novation(index, self.feedback[pitch as usize]);
         } else {
@@ -150,11 +175,15 @@ impl CustomApp {
         }
     }
 
-    fn draw(&self) {
-        led::clear();
+    fn refresh_grid(&self) {
         for row in 1..=8 {
             for col in 1..=8 { self.draw_pad(row * 10 + col); }
         }
+    }
+
+    fn draw(&self) {
+        led::clear();
+        self.refresh_grid();
         for (n, index) in [89, 79, 69, 59].into_iter().enumerate() {
             led::set_raw(index, if self.slot as usize == n { 0x10ff10 } else { 0x16434c });
         }
@@ -194,9 +223,9 @@ impl CustomApp {
 }
 
 impl App for CustomApp {
-    fn on_enter(&mut self) { self.slot = 0; self.transpose = Transpose::new(); self.feedback = [0; 128]; self.draw(); }
+    fn on_enter(&mut self) { self.slot = 0; self.transpose = Transpose::new(); self.feedback = [0; 128]; self.guide.end(); self.draw(); }
     fn on_exit(&mut self) {
-        self.release_all(); self.feedback = [0; 128];
+        self.release_all(); self.feedback = [0; 128]; self.guide.end();
         self.up_held = false; self.down_held = false;
         self.left_held = false; self.right_held = false;
     }
@@ -215,7 +244,7 @@ impl App for CustomApp {
         if (event.pressed && !already_sounding) || (!event.pressed && !self.held_pitch(pitch)) {
             driver::send_midi(MidiPort::Midi, &[0x90, pitch, velocity]);
         }
-        if self.slot < 2 { self.refresh_pitch(pitch); }
+        self.refresh_pitch(pitch);
     }
     fn on_surface_raw(&mut self, event: SurfaceEvent) {
         if (91..=94).contains(&event.index) {
@@ -255,7 +284,9 @@ impl App for CustomApp {
             _ => {}
         }
     }
-    fn on_tick(&mut self) {}
+    fn on_tick(&mut self) {
+        if self.guide.tick() { self.refresh_grid(); }
+    }
 }
 
 #[cfg(test)]
@@ -392,7 +423,7 @@ mod tests {
         app.on_enter();
         led::take_updates();
         assert!(app.receive_guide_sysex(&request(&[1])));
-        assert_eq!(response(), request(&[0x41, 0x02, 2, 0]));
+        assert_eq!(response(), request(&[0x41, 0x03, 2, 0]));
         for (slot, button, first, fifth, invalid) in [
             (0, 89, 48, 72, None),
             (1, 79, 36, 43, Some(21)),
@@ -429,17 +460,60 @@ mod tests {
     }
 
     #[test]
-    fn private_led_commands_cannot_modify_custom_or_reply() {
+    fn private_guide_follows_side_layers_held_transpose_and_lease() {
         crate::driver::take_midi();
         let mut app = CustomApp::new();
         app.on_enter();
         led::take_updates();
-        for command in [&[0x10][..], &[0x11], &[0x20, 0, 2, 48, 13], &[0x12]] {
-            assert!(!app.receive_guide_sysex(&request(command)));
-        }
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        assert_eq!(response(), request(&[0x50, 0x10, 1]));
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 1, 48, 13])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 13)]); // right hand falls back to left
+        app.on_surface(event(11, true));
+        assert_eq!(led::take_updates(), [Update::Set(11, 0xffffff)]); // held hides preview
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 48, 127])]);
+        assert!(app.receive_guide_sysex(&request(&[0x20, 1, 0, 48, 21])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 21)]); // current wins
+        app.on_surface(event(11, false));
+        led::take_updates();
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 48, 0])]);
+        app.on_surface_raw(event(94, true)); // transpose by one, pitch 48 moves off the grid
+        assert_eq!(app.pitch(11), Some(49));
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x11])));
+        assert_eq!(response(), request(&[0x50, 0x11, 1]));
+        assert!(app.receive_guide_sysex(&request(&[1])));
+        assert_eq!(response(), request(&[0x41, 0x03, 2, 1]));
+        assert!(app.receive_guide_sysex(&request(&[0x12])));
+        assert_eq!(response(), request(&[0x50, 0x12, 0]));
+        assert!(!app.guide.active());
+        led::take_updates();
+        app.on_surface_raw(event(94, false));
+        app.on_surface_raw(event(69, true)); // slot changes keep the lease but remap pitches
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        response();
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 0, 36, 13])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 13)]);
+        for _ in 0..guide::LEASE_TICKS { app.on_tick(); }
+        assert!(!app.guide.active());
+        assert!(led::take_updates().contains(&Update::Novation(11, 0)));
+        app.on_exit();
+        assert!(!app.guide.active());
+    }
+
+    #[test]
+    fn malformed_or_other_model_commands_are_ignored() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        led::take_updates();
         let mut wrong_model = request(&[1]);
         wrong_model[5] = guide::MODEL_PRO_MK3;
         assert!(!app.receive_guide_sysex(&wrong_model));
+        assert!(!app.receive_guide_sysex(&request(&[0x20, 2, 0, 48, 13])));
         assert!(crate::driver::take_midi().is_empty());
         assert!(led::take_updates().is_empty());
     }

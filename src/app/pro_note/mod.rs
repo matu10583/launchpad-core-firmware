@@ -305,6 +305,39 @@ impl App for NoteApp {
 mod tests {
     use super::*;
 
+    fn request(payload: &[u8]) -> Vec<u8> {
+        let mut frame = [0u8; 96];
+        let len = guide::reply(payload, guide::MODEL_PRO_MK3, &mut frame).unwrap();
+        frame[..len].to_vec()
+    }
+
+    #[test]
+    fn note_wire_layout_and_session_keep_performance_midi() {
+        let mut note = NoteApp::new();
+        note.channel = 6;
+        crate::driver::take_midi();
+        assert!(note.receive_guide_sysex(&request(&[0x10])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x10, 1]))]);
+        assert!(note.receive_guide_sysex(&request(&[0x02])));
+        let sent = crate::driver::take_midi();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, MidiPort::Midi);
+        assert_eq!(sent[0].1.len(), 89);
+        assert_eq!(sent[0].1[7], 0x42);
+        assert_eq!(sent[0].1[24], note.pitch(11).unwrap());
+        assert!(note.receive_guide_sysex(&request(&[0x20, 0, 1, 48, 13])));
+        assert_eq!(note.color(11), PadColor::Novation(13));
+        note.on_surface(SurfaceEvent { index: 11, pressed: true, value: 100 });
+        note.on_surface(SurfaceEvent { index: 11, pressed: false, value: 0 });
+        assert_eq!(crate::driver::take_midi(), [
+            (MidiPort::Midi, vec![0x96, 48, 127]), (MidiPort::Midi, vec![0x96, 48, 0])]);
+        assert!(note.receive_guide_sysex(&request(&[0x11])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x11, 1]))]);
+        assert!(note.receive_guide_sysex(&request(&[0x12])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
+        assert!(!note.guide.active());
+    }
+
     fn midi(port: MidiPort, status: u8, index: u8, value: u8) -> MidiEvent {
         MidiEvent { port, status, data1: index, data2: value }
     }

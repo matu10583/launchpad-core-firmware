@@ -270,6 +270,43 @@ mod tests {
         MidiEvent { port, status, data1: index, data2: value }
     }
 
+    fn request(payload: &[u8]) -> Vec<u8> {
+        let mut frame = [0u8; 96];
+        let len = guide::reply(payload, guide::MODEL_PRO_MK3, &mut frame).unwrap();
+        frame[..len].to_vec()
+    }
+
+    #[test]
+    fn wire_session_layout_and_selected_channel_playback() {
+        let mut app = C::new();
+        app.channel = 6;
+        crate::driver::take_midi();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x10, 1]))]);
+        assert!(app.receive_guide_sysex(&request(&[0x02])));
+        let sent = crate::driver::take_midi();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, MidiPort::Midi);
+        let frame = &sent[0].1;
+        assert_eq!(frame.len(), 89);
+        assert_eq!(&frame[7..14], &[0x42, 2, 0, 0, 0, 0, 64]);
+        assert_eq!(frame[14] & 0x11, 0x11);
+        assert_eq!(frame[24], 48);
+        assert_eq!(frame[28], 72);
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 1, 48, 13])));
+        assert_eq!(app.color(11), PadColor::Novation(13));
+        app.on_surface(SurfaceEvent { index: 11, pressed: true, value: 100 });
+        assert_eq!(app.color(11), PadColor::Rgb(0xffffff));
+        app.on_surface(SurfaceEvent { index: 11, pressed: false, value: 0 });
+        assert_eq!(crate::driver::take_midi(), [
+            (MidiPort::Midi, vec![0x96, 48, 127]), (MidiPort::Midi, vec![0x96, 48, 0])]);
+        assert!(app.receive_guide_sysex(&request(&[0x11])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x11, 1]))]);
+        assert!(app.receive_guide_sysex(&request(&[0x12])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
+        assert!(!app.guide.active());
+    }
+
     #[test]
     fn fixed_layout_and_held_notes_survive_transpose() {
         assert_eq!(C::pitch(11, 0), Some(48));

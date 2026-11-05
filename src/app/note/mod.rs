@@ -461,6 +461,37 @@ mod tests {
     }
 
     #[test]
+    fn x_note_wire_layout_session_and_playback_share_midi_port() {
+        fn request(payload: &[u8]) -> Vec<u8> {
+            let mut frame = [0u8; 96];
+            let len = guide::reply(payload, guide::MODEL_X, &mut frame).unwrap();
+            frame[..len].to_vec()
+        }
+        let mut app = NoteApp::new();
+        crate::driver::take_midi();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x10, 1]))]);
+        assert!(app.receive_guide_sysex(&request(&[0x02])));
+        let sent = crate::driver::take_midi();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, MidiPort::Midi);
+        assert_eq!(sent[0].1.len(), 85);
+        assert_eq!(sent[0].1[7], 0x42);
+        assert_eq!(sent[0].1[20], app.note_at(11).unwrap());
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 1, 48, 13])));
+        assert_eq!(app.grid_color(11), PadColor::Novation(13));
+        app.on_surface(SurfaceEvent { index: 11, pressed: true, value: 100 });
+        app.on_surface(SurfaceEvent { index: 11, pressed: false, value: 0 });
+        assert_eq!(crate::driver::take_midi(), [
+            (MidiPort::Midi, vec![0x90, 48, 127]), (MidiPort::Midi, vec![0x90, 48, 0])]);
+        assert!(app.receive_guide_sysex(&request(&[0x11])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x11, 1]))]);
+        assert!(app.receive_guide_sysex(&request(&[0x12])));
+        assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
+        assert!(!app.guide.active());
+    }
+
+    #[test]
     fn pad_press_and_release_still_send_performance_notes() {
         let mut app = NoteApp::new();
         crate::driver::take_midi();
