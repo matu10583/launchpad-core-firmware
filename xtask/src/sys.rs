@@ -51,6 +51,8 @@ pub mod settings {
         pub velocity_floor: u8,
         pub velocity_point_a: u8,
         pub velocity_point_b: u8,
+        pub velocity_point_c: u8,
+        pub velocity_point_d: u8,
         pub x_note_scale_mode: u8,
         pub x_note_scale: u8,
         pub x_note_root: u8,
@@ -63,6 +65,7 @@ pub mod settings {
         static SETTINGS: RefCell<Settings> = const { RefCell::new(Settings {
             velocity_enabled: 0, velocity_floor: 5, velocity_point_a: 63,
             velocity_point_b: 63, aftertouch_mode: 0,
+            velocity_point_c: 63, velocity_point_d: 63,
             x_note_scale_mode: 0, x_note_scale: 0, x_note_root: 0,
             x_note_overlap: 5, x_note_channel: 0,
         }) };

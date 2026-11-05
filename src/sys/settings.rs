@@ -14,9 +14,11 @@ const SETTINGS_DATA_OFFSET: usize = SETTINGS_CRC_OFFSET + SETTINGS_CRC_SIZE;
 const BASIC_SETTINGS_SIZE: usize = 7;
 const PALETTE_OFFSET: usize = SETTINGS_DATA_OFFSET + BASIC_SETTINGS_SIZE;
 const CUSTOM_PALETTE_BYTES: usize = 3 * 3 * 128;
-const SETTINGS_WIRE_SIZE: usize = PALETTE_OFFSET + CUSTOM_PALETTE_BYTES;
+const OLD_SETTINGS_WIRE_SIZE: usize = PALETTE_OFFSET + CUSTOM_PALETTE_BYTES;
+const SETTINGS_WIRE_SIZE: usize = OLD_SETTINGS_WIRE_SIZE + 2;
 
-// The two existing velocity bytes hold two Bezier points, floor, and toggle.
+// Keep the first two points in the existing velocity bytes; append the next
+// two after the custom palette so the latter never shifts on existing devices.
 pub const VELOCITY_POINT_NONE: u8 = crate::app::velocity::NO_POINT;
 
 #[cfg(feature = "launchpad-pro-mk3")]
@@ -32,6 +34,8 @@ pub struct Settings {
     pub velocity_floor: u8, // floor selection 0..7
     pub velocity_point_a: u8, // first Bezier point, 63 = absent
     pub velocity_point_b: u8, // second Bezier point, 63 = absent
+    pub velocity_point_c: u8,
+    pub velocity_point_d: u8,
     #[cfg(feature = "launchpad-x")]
     pub x_note_scale_mode: u8,
     #[cfg(feature = "launchpad-x")]
@@ -57,6 +61,8 @@ impl Settings {
             velocity_floor: 0,
             velocity_point_a: VELOCITY_POINT_NONE,
             velocity_point_b: VELOCITY_POINT_NONE,
+            velocity_point_c: VELOCITY_POINT_NONE,
+            velocity_point_d: VELOCITY_POINT_NONE,
             #[cfg(feature = "launchpad-x")]
             x_note_scale_mode: 0,
             #[cfg(feature = "launchpad-x")]
@@ -82,6 +88,8 @@ impl Settings {
             velocity_floor: if cfg!(feature = "launchpad-x") { 5 } else { 0 },
             velocity_point_a: VELOCITY_POINT_NONE,
             velocity_point_b: VELOCITY_POINT_NONE,
+            velocity_point_c: VELOCITY_POINT_NONE,
+            velocity_point_d: VELOCITY_POINT_NONE,
             #[cfg(feature = "launchpad-x")]
             x_note_scale_mode: 0,
             #[cfg(feature = "launchpad-x")]
@@ -110,6 +118,8 @@ impl Settings {
         self.velocity_floor = self.velocity_floor.min(7);
         self.velocity_point_a = self.velocity_point_a.min(VELOCITY_POINT_NONE);
         self.velocity_point_b = self.velocity_point_b.min(VELOCITY_POINT_NONE);
+        self.velocity_point_c = self.velocity_point_c.min(VELOCITY_POINT_NONE);
+        self.velocity_point_d = self.velocity_point_d.min(VELOCITY_POINT_NONE);
         #[cfg(feature = "launchpad-x")]
         {
             self.x_note_scale_mode = self.x_note_scale_mode.min(1);
@@ -197,6 +207,9 @@ impl Settings {
             }
         }
 
+        out[OLD_SETTINGS_WIRE_SIZE] = self.velocity_point_c;
+        out[OLD_SETTINGS_WIRE_SIZE + 1] = self.velocity_point_d;
+
         let crc = crc32(&out[SETTINGS_DATA_OFFSET..SETTINGS_WIRE_SIZE]);
         out[SETTINGS_CRC_OFFSET..SETTINGS_DATA_OFFSET].copy_from_slice(&crc.to_le_bytes());
     }
@@ -207,7 +220,11 @@ impl Settings {
         settings.brightness = input[SETTINGS_DATA_OFFSET];
         (settings.velocity_enabled, settings.velocity_floor,
          settings.velocity_point_a, settings.velocity_point_b) = crate::app::velocity::decode_settings(
-            input[SETTINGS_DATA_OFFSET + 1], input[SETTINGS_DATA_OFFSET + 2]);
+             input[SETTINGS_DATA_OFFSET + 1], input[SETTINGS_DATA_OFFSET + 2]);
+        if !is_old_wire_image(input) {
+            settings.velocity_point_c = input[OLD_SETTINGS_WIRE_SIZE];
+            settings.velocity_point_d = input[OLD_SETTINGS_WIRE_SIZE + 1];
+        }
         settings.aftertouch_mode = input[SETTINGS_DATA_OFFSET + 3];
         settings.aftertouch_curve = input[SETTINGS_DATA_OFFSET + 4];
         settings.palette = input[SETTINGS_DATA_OFFSET + 5];
@@ -283,7 +300,7 @@ pub fn load() {
         driver::read_flash(0, &mut buf[..read_len]);
     }
 
-    if read_len < SETTINGS_WIRE_SIZE || !validate_wire_image(&buf) {
+    if read_len < OLD_SETTINGS_WIRE_SIZE || !validate_wire_image(&buf) {
         let mut settings = Settings::defaults();
         settings.fill_empty_custom_palettes();
 
@@ -296,7 +313,7 @@ pub fn load() {
     }
 
     let mut settings = Settings::decode(&buf);
-    let settings_changed = settings.fill_empty_custom_palettes();
+    let settings_changed = settings.fill_empty_custom_palettes() || is_old_wire_image(&buf);
 
     unsafe {
         *SETTINGS.inner.get() = settings;
@@ -327,24 +344,26 @@ const fn min_usize(a: usize, b: usize) -> usize {
     if a < b { a } else { b }
 }
 
+fn stored_wire_crc(input: &[u8]) -> Option<u32> {
+    if input.len() < OLD_SETTINGS_WIRE_SIZE || input[..SETTINGS_MAGIC.len()] != SETTINGS_MAGIC {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        input[SETTINGS_CRC_OFFSET], input[SETTINGS_CRC_OFFSET + 1],
+        input[SETTINGS_CRC_OFFSET + 2], input[SETTINGS_CRC_OFFSET + 3],
+    ]))
+}
+
+fn is_old_wire_image(input: &[u8]) -> bool {
+    stored_wire_crc(input).is_some_and(|stored| {
+        stored == crc32(&input[SETTINGS_DATA_OFFSET..OLD_SETTINGS_WIRE_SIZE])
+    })
+}
+
 fn validate_wire_image(input: &[u8]) -> bool {
-    if input.len() < SETTINGS_WIRE_SIZE {
-        return false;
-    }
-
-    if input[..SETTINGS_MAGIC.len()] != SETTINGS_MAGIC {
-        return false;
-    }
-
-    let stored_crc = u32::from_le_bytes([
-        input[SETTINGS_CRC_OFFSET],
-        input[SETTINGS_CRC_OFFSET + 1],
-        input[SETTINGS_CRC_OFFSET + 2],
-        input[SETTINGS_CRC_OFFSET + 3],
-    ]);
-    let computed_crc = crc32(&input[SETTINGS_DATA_OFFSET..SETTINGS_WIRE_SIZE]);
-
-    stored_crc == computed_crc
+    let Some(stored) = stored_wire_crc(input) else { return false };
+    (input.len() >= SETTINGS_WIRE_SIZE && stored == crc32(&input[SETTINGS_DATA_OFFSET..SETTINGS_WIRE_SIZE]))
+        || is_old_wire_image(input)
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

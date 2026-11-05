@@ -180,7 +180,8 @@ impl App for PerformanceApp {
 pub(crate) fn apply_velocity_settings(settings: &settings::Settings, value: u8) -> u8 {
     crate::app::velocity::tune(
         value,
-        settings.velocity_point_a, settings.velocity_point_b,
+        [settings.velocity_point_a, settings.velocity_point_b,
+         settings.velocity_point_c, settings.velocity_point_d],
         settings.velocity_floor,
     )
 }
