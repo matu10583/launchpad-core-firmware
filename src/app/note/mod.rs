@@ -101,7 +101,7 @@ impl NoteApp {
         }
     }
 
-    // Private prototype: only AppHost's LPX (MIDI) / Note route calls this.
+    // Private prototype: AppHost routes LPX (MIDI) / Note here.
     // No Novation or universal SysEx identifier is reused.
     pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
         let Some(command) = guide::decode(data, guide::MODEL_X) else { return false };
@@ -111,18 +111,8 @@ impl NoteApp {
                 self.guide_reply(&[0x41, 0x03, 1, self.guide.active() as u8]);
             }
             GuideCommand::Layout => {
-                // 64 validity bits packed into ten 7-bit bytes, then 64 pitches.
-                let mut payload = [0u8; 77];
-                payload[0] = 0x42;
-                payload[1] = u8::from(self.scale_mode);
-                payload[2] = (self.transpose.total() + 64) as u8;
-                for slot in 0..64 {
-                    let index = (slot / 8 + 1) as u8 * 10 + (slot % 8 + 1) as u8;
-                    if let Some(pitch) = self.note_at(index) {
-                        payload[3 + slot / 7] |= 1 << (slot % 7);
-                        payload[13 + slot] = pitch;
-                    }
-                }
+                let payload = guide::x_layout(u8::from(self.scale_mode),
+                    self.transpose.total(), |index| self.note_at(index));
                 // 77-byte payload + 8-byte private framing = 85 bytes,
                 // within the USB MIDI TX queue's 32 packets.
                 self.guide_reply(&payload);

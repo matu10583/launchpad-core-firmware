@@ -90,6 +90,25 @@ pub fn reply(payload: &[u8], model: u8, out: &mut [u8]) -> Option<usize> {
     Some(len)
 }
 
+// X Note and source-defined Custom modes share the original v1 snapshot:
+// one layout byte, signed offset biased by 64, ten 7-bit validity bytes,
+// and 64 pitch bytes in bottom-left to top-right order.
+pub fn x_layout(layout: u8, offset: i16,
+                mut pitch: impl FnMut(u8) -> Option<u8>) -> [u8; 77] {
+    let mut payload = [0u8; 77];
+    payload[0] = 0x42;
+    payload[1] = layout;
+    payload[2] = (offset + 64) as u8;
+    for slot in 0..64 {
+        let index = (slot / 8 + 1) as u8 * 10 + (slot % 8 + 1) as u8;
+        if let Some(note) = pitch(index) {
+            payload[3 + slot / 7] |= 1 << (slot % 7);
+            payload[13 + slot] = note;
+        }
+    }
+    payload
+}
+
 // Pro Mk3 Note/Custom share this read-only layout snapshot. Signed offset is
 // encoded as two 7-bit bytes with an 8192 bias; X retains its v1 response.
 pub fn pro_layout(layout: u8, root: u8, scale: u8, overlap: u8, offset: i16,
@@ -276,6 +295,23 @@ mod tests {
         assert_eq!(&frame[..8], &[0xf0, MANUFACTURER_ID.unwrap(), b'C', b'F', b'W', 0x0e, 1, 0x42]);
         assert_eq!(frame[88], 0xf7);
         assert!(reply(&payload, MODEL_X, &mut [0; 88]).is_none());
+    }
+
+    #[test]
+    fn x_layout_preserves_v1_validity_and_framing() {
+        let payload = x_layout(1, -12, |index| match index {
+            11 => Some(0), 15 => Some(127), 88 => Some(72), _ => None,
+        });
+        assert_eq!(&payload[..3], &[0x42, 1, 52]);
+        assert_eq!(payload[3], 0b0001_0001);
+        assert_eq!(payload[12], 0b0000_0001);
+        assert_eq!(payload[13], 0);
+        assert_eq!(payload[17], 127);
+        assert_eq!(payload[76], 72);
+        let mut frame = [0u8; 96];
+        assert_eq!(reply(&payload, MODEL_X, &mut frame), Some(85));
+        assert_eq!(&frame[..8], &[0xf0, MANUFACTURER_ID.unwrap(), b'C', b'F', b'W', MODEL_X, 1, 0x42]);
+        assert_eq!(frame[84], 0xf7);
     }
 
     #[test]

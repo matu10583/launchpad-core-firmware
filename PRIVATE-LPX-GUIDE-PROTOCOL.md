@@ -1,10 +1,10 @@
 # PRIVATE / NOT FOR PUBLIC RELEASE — Launchpad X / Pro MK3 練習ガイド試作
 
-**個人利用・非公開FW向けの試作仕様。FW生成物を公開GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ユーザーの指定により、ソースには私用IDの値を固定せず、TeamCityのビルド手順でのみ渡す。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来FWを公開する場合は、利用権のあるSysEx IDを取得し、ソース・仕様・アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**実機検証は未実施。**
+**個人利用・非公開FW向けの試作仕様。FW生成物を公開GitHub Actions/Artifacts、Release、配布先へ送らないこと。** ユーザーの指定により、ソースには私用IDの値を固定せず、TeamCityのビルド手順でのみ渡す。MIDI Associationの特別ID `0x7D` は公開製品では使用できない。将来FWを公開する場合は、利用権のあるSysEx IDを取得し、ソース・仕様・アプリを再検証する。Novation ID・`0x7C`・Universal SysExを代用しない。**本変更の実機検証は未実施。**
 
 ## 受信先とバイト配置（**この私用試作内のみ**）
 
-USB `LPX (MIDI)`ではX Note Mode、USB `PRO MK3 (MIDI)`ではPro MK3のNoteまたは固定Custom Modeでのみ動く。DAWポートと他モードは対象外。すべての数字は十六進、値は7bit。フレームは必ず次の完全一致形式とする。
+USB `LPX (MIDI)`ではX Note Modeの全コマンド、X Custom 1～4の読み取り専用QUERY／GET_LAYOUT、USB `PRO MK3 (MIDI)`ではPro MK3のNoteまたは固定Custom Modeでのみ動く。DAWポートと他モードは対象外。すべての数字は十六進、値は7bit。フレームは必ず次の完全一致形式とする。
 
 ```text
 F0 7D 43 46 57 model 01 cmd [payload] F7
@@ -18,14 +18,16 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 
 | `cmd` | 送信payload | 動作 / 返答 |
 | --- | --- | --- |
-| `01` QUERY | なし | 読み取り専用。`41 03 mode active`（`01`左右ガイド、`02`レイアウト；旧方式のセッション中抑制bit`04`は廃止）。`mode=01` Note / `02` Pro MK3固定Custom；`active=00/01`。QUERYだけでは状態変更せず、Webの時間再生には必須ではない。 |
-| `02` GET_LAYOUT | なし | 読み取り専用。X: `42 preset transpose+64 valid[10] pitches[64]`（全85バイト）。Pro MK3: `42 layout root scale overlap offset_low offset_high valid[10] pitches[64]`（全89バイト）。`layout=00`Chromatic / `01`Scale / `02`固定Custom。Proの符号付きoffsetは`(offset+8192)`を下位・上位7bitに分けた値。8行×8列を下行左から上行右へ、slot0=11、slot7=18、slot8=21、slot63=88。`valid[slot/7]`のbit`slot%7`が1なら音程`pitches[slot]`有効、0ならpitch欄は0で無効。`valid[9]`のbit1～6は常に0。64バイトの音程は0～127（127も有効）。レイアウト照会は押下状態を変更しない。 |
+| `01` QUERY | なし | 読み取り専用。`41 capabilities mode active`（能力bit`01`左右ガイド、bit`02`レイアウト；旧方式のセッション中抑制bit`04`は廃止）。X NoteとPro Note／固定Customは`capabilities=03`、X Customは`02`（点灯操作不可）。`mode=01` Note / `02` Custom；X Customの`active=00`、それ以外は`00/01`。QUERYだけでは状態変更せず、Webの時間再生には必須ではない。 |
+| `02` GET_LAYOUT | なし | 読み取り専用。X: `42 layout transpose+64 valid[10] pitches[64]`（全85バイト）。Xの`layout=00`Chromatic Note / `01`Scale Note / `02..05` Custom 1～4。Custom 1は現在の移調を返し、Custom 2～4はoffset 0。Pro MK3: `42 layout root scale overlap offset_low offset_high valid[10] pitches[64]`（全89バイト）。Proの`layout=02`は固定Custom、符号付きoffsetは`(offset+8192)`を下位・上位7bitに分けた値。8行×8列を下行左から上行右へ、slot0=11、slot7=18、slot8=21、slot63=88。`valid[slot/7]`のbit`slot%7`が1なら音程`pitches[slot]`有効、0ならpitch欄は0で無効。`valid[9]`のbit1～6は常に0。64バイトの音程は0～127（127も有効）。レイアウト照会は押下状態を変更しない。 |
 | `10` BEGIN | なし | ガイド状態を消し、5秒間のセッション開始。`50 10 01`を応答。 |
 | `11` KEEPALIVE | なし | セッション中のみ5秒へ更新し`50 11 01`を応答。アプリは2秒ごとに送る。 |
 | `12` END | なし | セッションを終了しガイド表示を消去、`50 12 00`を応答。 |
 | `20` SET | `layer side pitch color` | セッション中のみ受付。`layer=00`予告、`01`現在；`side=00`左4列、`01`右4列、`02`両側；`pitch=00..7F`；`color=01..7F`は固定Novationパレット番号、`00`は指定対象だけを解除。SET成功時は5秒へ更新。 |
 
 返答も同じヘッダと終端を使用し、**各機種のUSB演奏用MIDIポートにのみ送信**。不正なID・モデル・版・長さ・データ（`80`以上）・未知コマンドは無視。`SET`は音や演奏MIDI出力を変更せず、押下パッドIDは送信しない。問い合わせのレスポンスは試作FW特有で、通常のDAW MIDIは変更しない。
+
+X Custom 1～4ではBEGIN／KEEPALIVE／END／SETを受け付けず応答もしない。点灯セッションはX Noteだけが保持し、Customへの切替時に終了する。既存X Noteの応答形式・レイアウト番号は変更しない。クライアントはX Customの新しいlayout値`02..05`と能力値`02`を認識し、未対応の古いFWでは照会がタイムアウトするものとして扱う。
 
 **アプリ移行上の注意:** 旧X専用仕様書の`valid[8]`はSysExデータの7-bit制約に反し、最上位ビットが立つ通常の配列でGET_LAYOUT応答が失敗するため、XとPro双方を`valid[10]`に修正した。Xの`model=0C`と送信コマンドは不変だが、**GET_LAYOUT応答の長さ・pitch開始位置は互換ではない**。アプリは85/89バイトを機種ごとに確認してからデコードし、旧応答を誤解釈しないこと。プロトコルは未配布の私用試作なので、この修正をv1の確定仕様とする。
 

@@ -267,10 +267,13 @@ impl AppHost {
     #[inline(never)]
     pub fn receive_sysex(&mut self, port: MidiPort, data: &[u8]) {
         #[cfg(feature = "launchpad-x")]
-        if port == MidiPort::Midi && self.current == AppId::Note
-            && self.note.receive_guide_sysex(data)
-        {
-            return;
+        if port == MidiPort::Midi {
+            let consumed = match self.current {
+                AppId::Note => self.note.receive_guide_sysex(data),
+                AppId::XCustom => self.x_custom.receive_guide_sysex(data),
+                _ => false,
+            };
+            if consumed { return; }
         }
         #[cfg(feature = "launchpad-pro-mk3")]
         if port == MidiPort::Midi {
