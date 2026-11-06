@@ -4,7 +4,8 @@
 use crate::app::{MidiEvent, MidiPort};
 
 pub const SYSEX_MAX_LEN: usize = 600;
-pub const MIDI_TX_MAX_PACKET_COUNT: usize = 32;
+// The Pro Mk3 DIN GPIO probe replies with 107 SysEx bytes (36 USB MIDI packets).
+pub const MIDI_TX_MAX_PACKET_COUNT: usize = 36;
 
 #[derive(Copy, Clone)]
 #[repr(C)]

@@ -12,6 +12,13 @@ const IDR: [usize; 6] = [
 ];
 const RCC_AHB1ENR: usize = 0x4002_3830;
 const WINDOW_MS: u64 = 40;
+const RESPONSE_LEN: usize = 2 + 3 + 2 + 3 + 6 * 16 + 1;
+const _: () = assert!(
+    RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
+);
+const _: () = assert!(
+    RESPONSE_LEN.div_ceil(3) < crate::sys::driver::common::usb::queues::MIDI_TX_QUEUE_SIZE
+);
 
 fn capture() -> [[u8; 16]; 6] {
     // Enabling port clocks does not change pin mux, pull or output state.
@@ -50,7 +57,7 @@ pub fn execute(data: &[u8]) -> bool {
     for (port, pins) in edges.into_iter().enumerate() {
         payload[3 + port * 16..3 + (port + 1) * 16].copy_from_slice(&pins);
     }
-    let mut response = [0u8; 112];
+    let mut response = [0u8; RESPONSE_LEN];
     if let Some(len) = guide::reply(&payload, guide::MODEL_PRO_MK3, &mut response) {
         driver::send_midi(MidiPort::Midi, &response[..len]);
     }
