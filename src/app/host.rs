@@ -266,6 +266,12 @@ impl AppHost {
 
     #[inline(never)]
     pub fn receive_sysex(&mut self, port: MidiPort, data: &[u8]) {
+        #[cfg(all(feature = "launchpad-pro-mk3", feature = "pro-din-probe"))]
+        if port == MidiPort::Midi
+            && crate::sys::driver::launchpad_pro_mk3::din_probe::execute(data)
+        {
+            return;
+        }
         #[cfg(feature = "launchpad-x")]
         if port == MidiPort::Midi {
             let consumed = match self.current {

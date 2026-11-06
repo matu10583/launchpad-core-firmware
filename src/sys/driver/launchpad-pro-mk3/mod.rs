@@ -6,6 +6,8 @@
 use crate::sys::driver::common::storage::ExtFlash;
 
 mod input_filter;
+#[cfg(feature = "pro-din-probe")]
+pub mod din_probe;
 pub mod led;
 mod map;
 mod runtime;

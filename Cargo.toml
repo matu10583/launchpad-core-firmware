@@ -60,6 +60,7 @@ stm32-metapac = { version = "21.0.0", optional = true }
 
 [features]
 default = []
+pro-din-probe = [] # Passive, SysEx-triggered diagnostic, included in Pro Mk3 builds only.
 no-setup-btn = []
 pressure-sensitive = []
 rgb-color = []
@@ -142,6 +143,7 @@ launchpad-pro = [
 ]
 
 launchpad-pro-mk3 = [
+  "pro-din-probe",
   "pressure-sensitive",
   "rgb-color",
   "dep:critical-section",
