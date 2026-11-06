@@ -18,16 +18,16 @@
 </style>
 <h1>Launchpad Pro Mk3 · DIN In 診断</h1>
 <p class="warning">このページは<strong>DINを修理しません</strong>。Pro Mk3の診断機能を含むFWが必要です。GPIOの変化を見るだけなので、ゼロでもDINピンが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
-<p>接続：外部USB→DINアダプタの <strong>DIN Out → Pro Mk3 DIN In</strong>。Pro Mk3のUSBもこのPCに接続します。Chromium系（Chrome/Edge）のWeb MIDI SysEx許可が必要です。このHTMLは外部通信・データ保存をしません。</p>
+<p>接続：<strong>手元のサステイン送信機器 → Pro Mk3 MIDI In、Pro Mk3 → PCへUSB</strong>。追加のDINアダプタは不要です。Chrome/EdgeのWeb MIDI SysEx許可が必要です。このHTMLから外部の機器へCC64は送りません。</p>
 <button id="connect">MIDI機器へのアクセスを許可</button>
 <fieldset>
   <legend>ポートを実名で選ぶ（DAWではなく演奏用MIDI）</legend>
   <label>Pro Mk3 USB MIDI 入力（診断応答）<select id="pro-in"><option value="">選択してください</option></select></label>
   <label>Pro Mk3 USB MIDI 出力（診断要求）<select id="pro-out"><option value="">選択してください</option></select></label>
-  <label>外部USB→DINアダプタ出力（Pro Mk3 DIN Inへ）<select id="din-out"><option value="">選択してください</option></select></label>
   <label>診断SysEx ID（通常は7D）<input id="id" value="7D" maxlength="2" autocomplete="off" spellcheck="false"></label>
 </fieldset>
-<button id="run" disabled>無入力とCC64送信中を比較</button>
+<button id="run" disabled>診断開始（基準値→8秒間の手動操作）</button>
+<button id="stop" disabled>途中で止める</button>
 <button id="copy" disabled>結果をコピー</button>
 <p id="status" role="status">未接続</p>
 <pre id="log" aria-live="polite"></pre>
@@ -46,6 +46,7 @@ function parseProbeResponse(bytes, manufacturerId) {
 function compareEdges(baseline, active) {
   if (baseline.length !== EDGE_COUNT || active.length !== EDGE_COUNT) throw new Error('GPIOデータが不正です');
   return active.map((count, index) => ({
+    index,
     pin: `GPIO${String.fromCharCode(65 + Math.floor(index / 16))}${index % 16}`,
     baseline: baseline[index], active: count, delta: count - baseline[index]
   })).filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta || a.pin.localeCompare(b.pin));
@@ -54,6 +55,7 @@ function compareEdges(baseline, active) {
 
 let access;
 let running = false;
+let cancelled = false;
 const get = selector => document.querySelector(selector);
 function append(line) { get('#log').textContent += line + '\n'; }
 function report(message) { get('#status').textContent = message; }
@@ -68,7 +70,6 @@ get('#connect').onclick = async () => {
     access = await navigator.requestMIDIAccess({sysex: true});
     fill(get('#pro-in'), access.inputs);
     fill(get('#pro-out'), access.outputs);
-    fill(get('#din-out'), access.outputs);
     get('#run').disabled = false;
     report('機器を選択してください。MIDIポートが見えない場合は、接続後にアクセスを再実行してください。');
   } catch (error) { report(`MIDI接続不可: ${error.message}`); }
@@ -93,66 +94,66 @@ async function snapshot(input, output, manufacturerId) {
 function selectedPorts() {
   const input = access?.inputs.get(get('#pro-in').value);
   const output = access?.outputs.get(get('#pro-out').value);
-  const din = access?.outputs.get(get('#din-out').value);
-  if (!input || !output || !din) throw new Error('3つのMIDIポートをすべて選択してください。');
-  if (output.id === din.id || /(?:PRO\s*MK3|Launchpad\s*Pro)/i.test(din.name || ''))
-    throw new Error('DIN出力はPro Mk3ではなく外部USB→DINアダプタを選んでください。');
+  if (!input || !output) throw new Error('Pro Mk3のUSB MIDI入出力を選択してください。');
   if (/(?:DAW)/i.test((input.name || '') + ' ' + (output.name || '')))
     throw new Error('Pro Mk3のDAWポートではなく演奏用MIDIポートを選んでください。');
   const id = get('#id').value.trim();
   if (!/^[0-7][0-9a-f]$/i.test(id) || Number.parseInt(id, 16) === 0) throw new Error('SysEx IDは01～7Fの2桁です。');
-  return {input, output, din, manufacturerId: Number.parseInt(id, 16)};
+  return {input, output, manufacturerId: Number.parseInt(id, 16)};
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+get('#stop').onclick = () => { cancelled = true; report('停止要求：現在の40ms観測が終わるまでお待ちください'); };
 get('#run').onclick = async () => {
   if (running) return;
   running = true;
+  cancelled = false;
   get('#run').disabled = true; get('#copy').disabled = true;
+  get('#stop').disabled = false;
   get('#log').textContent = '';
-  let interval;
-  let din;
   try {
     const ports = selectedPorts();
-    din = ports.din;
-    await Promise.all([ports.input.open(), ports.output.open(), din.open()]);
+    await Promise.all([ports.input.open(), ports.output.open()]);
     append(`Pro input: ${ports.input.name} / Pro output: ${ports.output.name}`);
-    append(`External DIN output: ${din.name} / SysEx ID: ${ports.manufacturerId.toString(16).toUpperCase().padStart(2, '0')}`);
-    report('無入力時を測定中：外部DINへは送信していません');
-    const baseline = await snapshot(ports.input, ports.output, ports.manufacturerId);
-    append(`baseline: ${baseline.raw}`);
-    let ccSent = 0;
-    let value = 127;
-    interval = setInterval(() => {
-      din.send([0xb0, 0x40, value]);
-      ccSent++;
-      value = value === 127 ? 0 : 127;
-    }, 10);
-    await delay(100);
+    append(`SysEx ID: ${ports.manufacturerId.toString(16).toUpperCase().padStart(2, '0')}`);
+    report('基準値を測定中：まだサステインを操作しないでください');
+    const baselineFrames = [];
+    for (let i = 0; i < 3 && !cancelled; i++) {
+      const frame = await snapshot(ports.input, ports.output, ports.manufacturerId);
+      baselineFrames.push(frame.edges);
+      append(`baseline ${i + 1}: ${frame.raw}`);
+      await delay(120);
+    }
+    if (cancelled) { report('中断しました'); return; }
+    for (let remaining = 3; remaining > 0 && !cancelled; remaining--) {
+      report(`${remaining}秒後に開始：サステインを踏む・離す操作を8秒間繰り返してください`);
+      await delay(1000);
+    }
+    if (cancelled) { report('中断しました'); return; }
     const active = [];
-    for (let i = 0; i < 3; i++) {
-      report(`CC64送信中：${i + 1}/3 を測定中（このタブを前面に）`);
+    const started = performance.now();
+    for (let i = 0; i < 40 && performance.now() - started < 8000 && !cancelled; i++) {
+      report(`サステインを繰り返し踏む・離す：${i + 1}/40 を測定中（タブを前面に）`);
       const frame = await snapshot(ports.input, ports.output, ports.manufacturerId);
       active.push(frame.edges);
       append(`active ${i + 1}: ${frame.raw}`);
+      if (!cancelled) await delay(160);
     }
-    clearInterval(interval); interval = undefined;
-    din.send([0xb0, 0x40, 0]);
-    append(`CC64 events sent: ${ccSent}`);
-    if (ccSent < 5) append('警告: ブラウザのタイマーが抑制されました。タブを前面にして再試行してください。');
-    const observed = baseline.edges.map((_, index) => Math.max(...active.map(frame => frame[index])));
-    const differences = compareEdges(baseline.edges, observed);
+    if (!active.length) { report('有効な観測なしで中断しました'); return; }
+    append(`Active snapshots: ${active.length}（各40ms、間隔あり）`);
+    const baseline = baselineFrames[0].map((_, index) => Math.max(...baselineFrames.map(frame => frame[index])));
+    const observed = baseline.map((_, index) => Math.max(...active.map(frame => frame[index])));
+    const differences = compareEdges(baseline, observed);
     if (differences.length) for (const row of differences.slice(0, 20))
-      append(`${row.pin}: baseline ${row.baseline}, active max ${row.active}, +${row.delta}`);
+      append(`${row.pin}: baseline max ${row.baseline}, active max ${row.active}, +${row.delta} (${active.filter(frame => frame[row.index] > row.baseline).length}回観測)`);
     else append('変化増分なし。未観測のピンやアナログ入力を除外できません。');
-    report('完了。結果の全文を共有してください。GPIO変化だけではDINピンを確定できません。');
+    report(`${cancelled ? '途中停止' : '完了'}。結果の全文を共有してください。GPIO変化だけではDINピンを確定できません。`);
     get('#copy').disabled = false;
   } catch (error) {
     report(`診断失敗: ${error.message}`);
     append(`ERROR: ${error.message}`);
   } finally {
-    if (interval !== undefined) clearInterval(interval);
-    if (din) { try { din.send([0xb0, 0x40, 0]); } catch (_) {} }
     running = false;
+    get('#stop').disabled = true;
     get('#run').disabled = !access;
   }
 };

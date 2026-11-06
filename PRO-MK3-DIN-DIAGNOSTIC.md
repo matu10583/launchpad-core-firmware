@@ -8,21 +8,21 @@
 F0 7D 43 46 57 0E 01 70 01 28 [GPIOA pin0..15 (16 bytes)] ... [GPIOF pin0..15] F7
 ```
 
-`28`は16進で40ms、変化回数は0～127（飽和）。**基準（無入力）と、DIN InへCC64を約10ms間隔で繰り返した状態**の両方を記録し、GPIOポート・ピン番号ごとの差を比べる。USB MIDIモニターで返信の全バイトを保存する。外部鍵盤→DIN InとPC→USBで経路を分け、ソフトウェアのMIDIループバックを無効にする。返答がない、またはパッド・LEDが不安定なら直ちに診断を中止する。
+`28`は16進で40ms、変化回数は0～127（飽和）。**基準（サステイン操作なし）と、DIN Inの機器からCC64を手動で踏む・離す操作を繰り返す状態**の両方を記録し、GPIOポート・ピン番号ごとの差を比べる。ブラウザは基準3回と操作中最大40回の診断要求をUSBで送り、応答の全バイトを表示する。外部機器→DIN InとPC→USBで経路を分け、ソフトウェアのMIDIループバックを無効にする。返答がない、またはパッド・LEDが不安定なら直ちに診断を中止する。
 
 **重要な制限:** 入力がアナログモードで無効化されているピン、M0側の端子、GPIO A～F以外のピンは観測できない。変化の検出だけではMIDI入力ピンとの証明にならず、特定したピンで後から31250bps・8N1の受信データとCC64を検証する必要がある。全てゼロでもDIN入力がないとは結論できない。外部のMidiPort::DinやThruを有効化したビルドではない。
 
 ## 実機での確認手順
 
 1. **Pro Mk3構成の新しいTeamCityビルド**が成功し、コミットSHAがこの診断変更を含むことを確認する。ZIP内のPro Mk3用`.syx`だけを使う。従来の正常に動くPro Mk3版と純正復旧手段を手元に残す。実機への書込みはユーザーのみが行う。公式のブートローダー手順は[NovationのSetupガイド](https://userguides.novationmusic.com/hc/en-gb/articles/25494545308306-Using-the-Launchpad-Pro-MK3-s-Setup-page#bootloader-menu)を参照。**USBの通常の演奏用MIDIポートへFWを書き込まない**。本体のSetupを押しながらUSB接続して、表示されたブートローダーポートを選ぶ。誤機種ファイルを使わない。
-2. Pro Mk3を通常起動し、PCのUSB MIDI入力/出力から**PRO MK3 (MIDI)**（DAWではない）に相当するポートを確認。外部USB→DINインターフェースの**DIN Out → Pro Mk3 DIN In**を接続。対応するTRS変換ケーブルを使い、DIN OutをProのDIN Outへ接続しない。DAW等の自動MIDIループバックを停止。音源は接続しなくてよい。
-3. PCに追加ツールをインストールせず、[診断ページ `tools/pro_mk3_din_probe.html`](tools/pro_mk3_din_probe.html)をダウンロードしてChrome/Edgeで**ローカルファイルとして開く**。この単一HTMLは外部スクリプト・ネット接続・保存をしない。クリックしてWeb MIDIの**SysExアクセスを許可**し、Pro Mk3 USB **MIDI**入力・出力と、外部USB→DINインターフェースの出力をそれぞれ**ポート名を見て**選択。3つ目にPro Mk3の出力を選ばない。`CORE_GUIDE_SYSEX_ID`が通常の`7D`以外のビルドでは、ページのID欄を変更する。
-4. `無入力とCC64送信中を比較`を押す。ページは基準時に1回診断を行い、**外部DINアダプタ出力にch1 CC64=127/0を約10ms間隔で送信**しながら3回診断し、GPIOの差分を表示する。ブラウザを前面に保ち、途中で別のMIDIソフトから送らない。`結果をコピー`で4件の `reply: F0 ... F7` と `GPIO...` 差分を共有する。PCのブラウザはChrome/EdgeのWeb MIDI SysEx対応と安全なコンテキストが必要で、環境によっては`file://`から許可できない。その場合は、信頼できるローカルHTTPS配信/`localhost`で同じHTMLを開くか、下記のPython代替を使う。FWのZIPとHTMLは別々に配布し、**ページを開くだけではFWを書き換えない**。
+2. Pro Mk3を通常起動し、**手元のサステイン送信機器のMIDI Out → Pro Mk3 MIDI In、Pro Mk3 USB → PC**だけを接続。別のUSB→DINアダプタは不要。PCのUSB MIDI入力/出力から**PRO MK3 (MIDI)**（DAWではない）に相当するポートを確認。DAW等の自動MIDIループバックを停止。音源は接続しなくてよい。
+3. PCに追加ツールをインストールせず、[診断ページ `tools/pro_mk3_din_probe.html`](tools/pro_mk3_din_probe.html)をダウンロードしてChrome/Edgeで**ローカルファイルとして開く**。この単一HTMLは外部スクリプト・ネット接続・保存をしない。クリックしてWeb MIDIの**SysExアクセスを許可**し、Pro Mk3 USB **MIDI**入力・出力の2つだけを選ぶ。`CORE_GUIDE_SYSEX_ID`が通常の`7D`以外のビルドでは、ページのID欄を変更する。
+4. サステインを触らずに`診断開始`を押し、基準3回が終了するのを待つ。3秒のカウントダウン後、**8秒間、サステインを繰り返し踏む・離す（1秒に2～4回を目安）**。ページが間隔を空けて診断要求を繰り返し、最大40個の40ms窓でGPIOの変化を観測する。ブラウザを前面に保つ。`結果をコピー`で `baseline` と `active` の全 `F0 ... F7` 応答および `GPIO...` 差分を共有する。1回だけのペダル操作は40msの窓に入らない可能性がある。PCのブラウザはChrome/EdgeのWeb MIDI SysEx対応と安全なコンテキストが必要で、環境によっては`file://`から許可できない。その場合は、信頼できるローカルHTTPS配信/`localhost`で同じHTMLを開く。FWのZIPとHTMLは別々に配布し、**ページを開くだけではFWを書き換えない**。
 5. 無返信ならUSBポート・FWリビジョン・`CORE_GUIDE_SYSEX_ID`を確認。出力がすべて0でも非接続とは断定しない。検査後、通常演奏・LED・ボタン操作に異常がないか確認し、不要なら保存済みの通常FWへ戻す。電源再接続で直らない異常があれば診断を中止し、以前のFWへ復旧する。
 
-外部USB→DINアダプタがない場合は、外部鍵盤側からCC64を連打しながらMIDIモニターで手動SysEx要求を送れるが、40msの観測に偶然入らないことがある。**返信がゼロだけの結果では原因を確定しない。**
+40ms単位の窓の間には観測されない時間があるため、**返信がゼロだけの結果では原因を確定しない。** ペダルの送信が押下・解放の瞬間だけなら繰り返し操作が必要。
 
-Pythonを使える場合は従来の`tools/pro_mk3_din_probe.py`も残す。`python -m pip install mido python-rtmidi`、`python tools/pro_mk3_din_probe.py --list`でポートを確認後、`python tools/pro_mk3_din_probe.py --pro-in "<Pro USB MIDI input>" --pro-out "<Pro USB MIDI output>" --din-out "<外部DINインターフェースのoutput>"`を実行。ブラウザと同じプロトコル・結果を使う。どちらも実機でまだ未検証。
+追加の外部USB→DINアダプタを持つ場合だけ、従来の`tools/pro_mk3_din_probe.py`も選べる。**今回の実機確認には不要。** ブラウザもPythonも実機ではまだ未検証。
 
 ## ビルドと制約
 
