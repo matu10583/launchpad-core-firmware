@@ -10,8 +10,8 @@ assert.ok(script, 'inline script is present');
 new Function(script); // Syntax check the entire offline page.
 const pure = script.match(/\/\/ BEGIN PURE PROTOCOL([\s\S]*?)\/\/ END PURE PROTOCOL/)?.[1];
 assert.ok(pure, 'protocol parser is present');
-const { parseProbeResponse, parseConfigResponse, compareEdges } = vm.runInNewContext(
-  pure + '; ({parseProbeResponse, parseConfigResponse, compareEdges})'
+const { parseProbeResponse, parseConfigResponse, parseUartResponse, compareEdges } = vm.runInNewContext(
+  pure + '; ({parseProbeResponse, parseConfigResponse, parseUartResponse, compareEdges})'
 );
 
 test('accepts only Pro Mk3 diagnostic SysEx of the right ID, length and version', () => {
@@ -54,6 +54,19 @@ test('configuration reply validates port, clock and four 7-bit fields per pin', 
   assert.equal(parseConfigResponse(frame, 0x7d, 2), null);
 });
 
+test('UART snapshot reads 32-bit register values without accepting wrong index', () => {
+  const regs = [0x12345678, 0, 0x03a1, 0x28];
+  const frame = Uint8Array.from([0xf0, 0x7d, ...FIXED_IN_TEST, 0x72, 1, 1,
+    ...regs.flatMap(value => Array.from({length: 5}, (_, shift) => (value >>> (shift * 7)) & 127)), 0xf7]);
+  const result = parseUartResponse(frame, 0x7d, 1);
+  assert.equal(result.cr1, 0x12345678);
+  assert.equal(result.brr, 0x03a1);
+  assert.equal(result.isr, 0x28);
+  assert.equal(parseUartResponse(frame, 0x7d, 2), null);
+  frame[14] = 16;
+  assert.equal(parseUartResponse(frame, 0x7d, 1), null);
+});
+
 test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async () => {
   assert.doesNotMatch(html, /id="din-out"/);
   const elements = new Map();
@@ -67,6 +80,7 @@ test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async (
   let receive;
   let requests = 0;
   let configs = 0;
+  let uarts = 0;
   const input = {
     name: 'PRO MK3 (MIDI)', manufacturer: 'Novation', id: 'in', open: async () => {},
     addEventListener(_type, fn) { receive = fn; }, removeEventListener() { receive = null; }
@@ -79,6 +93,12 @@ test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async (
         assert.deepEqual(Array.from(bytes.slice(8)), [configs++, 0xf7]);
         receive({data: Uint8Array.from([0xf0, 0x7d, ...FIXED_IN_TEST, 0x71, bytes[8], 1,
           ...Array(16).fill([3, 0, 0, 0]).flat(), 0xf7])});
+        return;
+      }
+      if (bytes[7] === 0x32) {
+        assert.deepEqual(Array.from(bytes.slice(8)), [uarts++, 0xf7]);
+        receive({data: Uint8Array.from([0xf0, 0x7d, ...FIXED_IN_TEST, 0x72, bytes[8], 1,
+          ...Array(20).fill(0), 0xf7])});
         return;
       }
       assert.deepEqual(Array.from(bytes.slice(7)), [0x30, 0xf7]);
@@ -104,6 +124,7 @@ test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async (
   await elements.get('#run').onclick();
   assert.ok(requests >= 4);
   assert.equal(configs, 6);
+  assert.equal(uarts, 4);
   assert.match(elements.get('#log').textContent, /GPIOD2: baseline max 0, active max 2, \+2/);
   assert.equal(elements.get('#copy').disabled, false);
 });

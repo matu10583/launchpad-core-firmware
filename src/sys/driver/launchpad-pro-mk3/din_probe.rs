@@ -14,6 +14,7 @@ const RCC_AHB1ENR: usize = 0x4002_3830;
 const WINDOW_MS: u64 = 40;
 const RESPONSE_LEN: usize = 2 + 3 + 2 + 3 + 6 * 16 + 1;
 const CONFIG_RESPONSE_LEN: usize = 2 + 3 + 2 + 3 + 16 * 4 + 1;
+const UART_RESPONSE_LEN: usize = 2 + 3 + 2 + 2 + 1 + 4 * 5 + 1;
 const _: () = assert!(
     RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
 );
@@ -23,6 +24,47 @@ const _: () = assert!(
 const _: () = assert!(
     CONFIG_RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
 );
+const _: () = assert!(
+    UART_RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
+);
+
+// USART1, UART7, UART8 are the AF candidates in the GPIO snapshot. UART5
+// is the known M0 link, read as a reference. Never read RDR: it consumes data.
+const UARTS: [(usize, usize, u32); 4] = [
+    (0x4001_1000, 0x4002_3844, 1 << 4),  // USART1, APB2ENR
+    (0x4000_7800, 0x4002_3840, 1 << 30), // UART7, APB1ENR
+    (0x4000_7c00, 0x4002_3840, 1 << 31), // UART8, APB1ENR
+    (0x4000_5000, 0x4002_3840, 1 << 20), // UART5 (M0), APB1ENR
+];
+
+/// Request 32 <0=USART1, 1=UART7, 2=UART8, 3=UART5/M0> returns
+/// 72 <index> <clock> plus CR1/CR3/BRR/ISR in little-endian 7-bit groups.
+fn uart_snapshot(data: &[u8]) -> bool {
+    for (index, &(base, rcc, mask)) in UARTS.iter().enumerate() {
+        let mut request = [0u8; 16];
+        let Some(len) = guide::reply(&[0x32, index as u8], guide::MODEL_PRO_MK3, &mut request) else { return false };
+        if data != &request[..len] { continue; }
+
+        let clock = unsafe { core::ptr::read_volatile(rcc as *const u32) & mask != 0 };
+        let mut payload = [0u8; 3 + 4 * 5];
+        payload[..3].copy_from_slice(&[0x72, index as u8, u8::from(clock)]);
+        if clock {
+            for (register, offset) in [0x00, 0x08, 0x0c, 0x1c].into_iter().enumerate() {
+                let mut value = unsafe { core::ptr::read_volatile((base + offset) as *const u32) };
+                for byte in &mut payload[3 + register * 5..3 + (register + 1) * 5] {
+                    *byte = (value & 0x7f) as u8;
+                    value >>= 7;
+                }
+            }
+        }
+        let mut response = [0u8; UART_RESPONSE_LEN];
+        if let Some(len) = guide::reply(&payload, guide::MODEL_PRO_MK3, &mut response) {
+            driver::send_midi(MidiPort::Midi, &response[..len]);
+        }
+        return true;
+    }
+    false
+}
 
 /// Request 31 <port A=0..F=5> returns 71 <port> <clock enabled> followed by
 /// 16 tuples of (MODER, AFR, PUPDR, IDR), each value kept within MIDI's 7 bits.
@@ -89,6 +131,7 @@ fn capture() -> [[u8; 16]; 6] {
 /// followed by 6x16 saturating edge counts for GPIO A..F, pins 0..15.
 pub fn execute(data: &[u8]) -> bool {
     if config_snapshot(data) { return true; }
+    if uart_snapshot(data) { return true; }
     let mut request = [0u8; 16];
     let Some(len) = guide::reply(&[0x30], guide::MODEL_PRO_MK3, &mut request) else { return false };
     if data != &request[..len] { return false; }

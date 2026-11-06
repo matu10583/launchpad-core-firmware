@@ -17,7 +17,7 @@
   .warning { border-left: 4px solid #bf6930; padding-left: 1em }
 </style>
 <h1>Launchpad Pro Mk3 · DIN In 診断</h1>
-<p class="warning">このページは<strong>DINを修理しません</strong>。GPIO設定読み取り（コマンド31）を含む新しいPro Mk3診断FWが必要です。GPIOの変化とピン設定を見るだけなので、ゼロでもDINピンが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
+<p class="warning">このページは<strong>DINを修理しません</strong>。GPIO設定とUART状態の読み取り（コマンド31/32）を含む新しいPro Mk3診断FWが必要です。DIN配線を推測してピンやUARTを設定しません。ゼロでもDINが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
 <p>接続：<strong>手元のサステイン送信機器 → Pro Mk3 MIDI In、Pro Mk3 → PCへUSB</strong>。追加のDINアダプタは不要です。Chrome/EdgeのWeb MIDI SysEx許可が必要です。このHTMLから外部の機器へCC64は送りません。</p>
 <button id="connect">MIDI機器へのアクセスを許可</button>
 <fieldset>
@@ -53,6 +53,18 @@ function parseConfigResponse(bytes, manufacturerId, port) {
   const values = Array.from(bytes.slice(prefix.length + 1, -1));
   if (values.some((v, i) => v > [3, 15, 3, 1][i % 4])) return null;
   return {clock: !!clock, pins: Array.from({length: 16}, (_, i) => values.slice(i * 4, i * 4 + 4))};
+}
+function parseUartResponse(bytes, manufacturerId, index) {
+  const prefix = [0xf0, manufacturerId, ...FIXED, 0x72, index];
+  if (bytes.length !== prefix.length + 1 + 4 * 5 + 1 ||
+      !prefix.every((value, i) => bytes[i] === value) || bytes.at(-1) !== 0xf7) return null;
+  const clock = bytes[prefix.length];
+  if (clock > 1) return null;
+  const groups = Array.from(bytes.slice(prefix.length + 1, -1));
+  if (groups.some((value, i) => value > 127 || (i % 5 === 4 && value > 15))) return null;
+  const regs = Array.from({length: 4}, (_, i) => groups.slice(i * 5, i * 5 + 5)
+    .reduce((value, byte, shift) => (value + byte * 2 ** (shift * 7)) >>> 0, 0));
+  return {clock: !!clock, cr1: regs[0], cr3: regs[1], brr: regs[2], isr: regs[3]};
 }
 function compareEdges(baseline, active) {
   if (baseline.length !== EDGE_COUNT || active.length !== EDGE_COUNT) throw new Error('GPIOデータが不正です');
@@ -111,6 +123,10 @@ async function configSnapshot(input, output, manufacturerId, port) {
   return requestReply(input, output, [0xf0, manufacturerId, ...FIXED, 0x31, port, 0xf7],
     bytes => parseConfigResponse(bytes, manufacturerId, port));
 }
+async function uartSnapshot(input, output, manufacturerId, index) {
+  return requestReply(input, output, [0xf0, manufacturerId, ...FIXED, 0x32, index, 0xf7],
+    bytes => parseUartResponse(bytes, manufacturerId, index));
+}
 function selectedPorts() {
   const input = access?.inputs.get(get('#pro-in').value);
   const output = access?.outputs.get(get('#pro-out').value);
@@ -154,6 +170,15 @@ get('#run').onclick = async () => {
         const [mode, af, pull, level] = frame.result.pins[pin];
         if (mode !== 3) append(`GPIO${letter}${pin}: mode=${mode}, AF=${af}, pull=${pull}, level=${level}`);
       }
+    }
+    if (cancelled) { report('中断しました'); return; }
+    append('UART状態の読み取り（RDRは読まない、状態変更なし）:');
+    for (let index = 0; index < 4 && !cancelled; index++) {
+      const name = ['USART1', 'UART7', 'UART8', 'UART5 (内部M0通信)'][index];
+      const frame = await uartSnapshot(ports.input, ports.output, ports.manufacturerId, index);
+      append(`uart ${name}: ${frame.raw}`);
+      const {clock, cr1, cr3, brr, isr} = frame.result;
+      append(`${name}: clock=${Number(clock)}, UE=${Number(!!(cr1 & 1))}, RE=${Number(!!(cr1 & 4))}, RXNE=${Number(!!(isr & 32))}, ORE=${Number(!!(isr & 8))}, BRR=0x${brr.toString(16).toUpperCase()}, CR3=0x${cr3.toString(16).toUpperCase()}`);
     }
     if (cancelled) { report('中断しました'); return; }
     for (let remaining = 3; remaining > 0 && !cancelled; remaining--) {
