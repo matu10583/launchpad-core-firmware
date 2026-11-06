@@ -5,7 +5,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use embassy_stm32::interrupt::{self, InterruptExt, Priority};
+use embassy_stm32::interrupt::{self, InterruptExt};
 use stm32_metapac as pac;
 
 use super::grid::Grid;
@@ -40,7 +40,6 @@ pub fn start(grid: *mut Grid) {
     pac::TIM1.sr().write(|w| w.set_uif(false));
     pac::TIM1.dier().modify(|w| w.set_uie(true));
 
-    interrupt::TIM1_UP_TIM10.set_priority(Priority::P0);
     interrupt::TIM1_UP_TIM10.unpend();
     unsafe {
         interrupt::TIM1_UP_TIM10.enable();

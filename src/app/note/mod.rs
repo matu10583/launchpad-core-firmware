@@ -191,7 +191,9 @@ impl NoteApp {
     }
 
     fn draw(&self) {
-        led::clear();
+        // A guide SysEx can trigger a redraw while the scan interrupt is
+        // displaying this frame. Do not blank every pad between updates.
+        // AppHost clears LEDs when switching modes; draw replaces every Note pad.
         for row in 1..=8 {
             for col in 1..=8 {
                 let index = row * 10 + col;
@@ -458,6 +460,25 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].0, MidiPort::Midi);
         assert_eq!(&replies[0].1[7..11], &[0x41, 0x03, 1, 0]);
+    }
+
+    #[test]
+    fn guide_sysex_redraw_does_not_blank_note_grid() {
+        use crate::sys::led::{take_updates, Update};
+
+        let mut app = NoteApp::new();
+        app.on_enter();
+        take_updates();
+
+        for payload in [&[0x10][..], &[0x20, 0, 1, 48, 13], &[0x12]] {
+            let mut frame = [0u8; 96];
+            let len = guide::reply(payload, guide::MODEL_X, &mut frame).unwrap();
+            assert!(app.receive_guide_sysex(&frame[..len]));
+            let updates = take_updates();
+            assert!(!updates.contains(&Update::Clear));
+            assert!(updates.iter().any(|update| matches!(update,
+                Update::Set(index, _) | Update::Novation(index, _) if (11..=88).contains(index))));
+        }
     }
 
     #[test]
