@@ -121,6 +121,23 @@ fn din_rx_snapshot(data: &[u8]) -> bool {
     true
 }
 
+/// Explicitly set PA7's electrical level; stock startup=Low. This does not
+/// label either level as OUT or THRU until that relation is verified.
+fn thru_pin_level(data: &[u8]) -> bool {
+    for level in 0..=1u8 {
+        let mut request = [0u8; 16];
+        let Some(len) = guide::reply(&[0x34, level], guide::MODEL_PRO_MK3, &mut request) else { return false };
+        if data != &request[..len] { continue; }
+        super::din_tx::set_thru_pin_high(level == 1);
+        let mut response = [0u8; 16];
+        if let Some(len) = guide::reply(&[0x74, level], guide::MODEL_PRO_MK3, &mut response) {
+            driver::send_midi(MidiPort::Midi, &response[..len]);
+        }
+        return true;
+    }
+    false
+}
+
 // USART1, UART7, UART8 are the AF candidates in the GPIO snapshot. UART5
 // is the known M0 link, read as a reference. Never read RDR: it consumes data.
 const UARTS: [(usize, usize, u32); 4] = [
@@ -223,6 +240,7 @@ fn capture() -> [[u8; 16]; 6] {
 /// F0 <guide ID> C F W 0E 01 30 F7 -> response payload 70 01 28
 /// followed by 6x16 saturating edge counts for GPIO A..F, pins 0..15.
 pub fn execute(data: &[u8]) -> bool {
+    if thru_pin_level(data) { return true; }
     if din_rx_snapshot(data) { return true; }
     if config_snapshot(data) { return true; }
     if uart_snapshot(data) { return true; }

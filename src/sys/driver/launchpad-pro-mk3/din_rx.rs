@@ -48,7 +48,7 @@ pub fn init() {
     write(GPIOC, (read(GPIOC) & !(3 << PC11_SHIFT)) | (2 << PC11_SHIFT));
 
     write(UART4, 0);
-    write(UART4 + 0x04, 0); // CR2: no RX inversion, 1 stop bit
+    write(UART4 + 0x04, 1 << 17); // CR2.TXINV before UE=1; RX remains normal
     write(UART4 + 0x08, 0); // CR3: no DMA
     write(UART4 + 0x0c, 1728); // APB1=54MHz / 31,250bps; OVER8=0
     write(UART4 + 0x18, 1 << 3); // discard stale RX data
@@ -70,6 +70,7 @@ pub extern "C" fn uart4_handler() {
             if !receiver.bytes.push(byte) { receiver.lost = true; }
         }
     });
+    super::din_tx::uart4_tx_interrupt(isr);
 }
 
 pub fn poll(parser: &mut Parser) {

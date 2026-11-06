@@ -254,7 +254,18 @@ impl Driver for RuntimeDriver {
     }
 
     fn send_midi(&mut self, port: crate::sys::midi::MidiPort, data: &[u8]) {
-        let _ = super::usb::enqueue_tx_message(port.as_cable(), data);
+        match port {
+            crate::sys::midi::MidiPort::Daw => {
+                let _ = super::usb::enqueue_tx_message(port.as_cable(), data);
+            }
+            crate::sys::midi::MidiPort::Midi => {
+                let _ = super::usb::enqueue_tx_message(port.as_cable(), data);
+                let _ = super::din_tx::enqueue(data);
+            }
+            crate::sys::midi::MidiPort::Din => {
+                let _ = super::din_tx::enqueue(data);
+            }
+        }
     }
 
     fn flash_size(&mut self) -> u32 {

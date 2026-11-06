@@ -8,6 +8,8 @@ use crate::sys::driver::common::storage::ExtFlash;
 mod input_filter;
 mod din_parser;
 mod din_rx;
+mod din_tx;
+mod din_tx_format;
 #[cfg(feature = "pro-din-probe")]
 pub mod din_probe;
 pub mod led;
@@ -130,6 +132,7 @@ async fn main(_spawner: Spawner) {
     usb::init_event_queues();
     usb::init();
     din_rx::init();
+    din_tx::init();
     let mut din_parser = din_parser::Parser::new();
 
     let app_host = AppHost::new(AppId::Boot);
@@ -145,8 +148,14 @@ async fn main(_spawner: Spawner) {
 
         if let Some(event) = usb::dequeue_midi_event() {
             let mut app_host_guard = app_host.lock().await;
+            if event.port == crate::sys::midi::MidiPort::Midi {
+                din_tx::enqueue_usb_event(event);
+            }
             app_host_guard.route_midi_event(event);
             while let Some(event) = usb::dequeue_midi_event() {
+                if event.port == crate::sys::midi::MidiPort::Midi {
+                    din_tx::enqueue_usb_event(event);
+                }
                 app_host_guard.route_midi_event(event);
             }
         }
