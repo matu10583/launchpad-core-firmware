@@ -113,7 +113,7 @@ impl NoteApp {
     pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
         let Some(command) = guide::decode(data, guide::MODEL_PRO_MK3) else { return false };
         match command {
-            GuideCommand::Query => self.guide_reply(&[0x41, 0x03, 1, self.guide.active() as u8]),
+            GuideCommand::Query => self.guide_reply(&[0x41, guide::CAPABILITIES, 1, self.guide.active() as u8]),
             GuideCommand::Layout => {
                 let payload = guide::pro_layout(self.scale_layout as u8, self.root,
                     self.scale as u8, self.overlap, self.offset(), |index| self.pitch(index));
@@ -137,6 +137,9 @@ impl NoteApp {
             }
             GuideCommand::Set { layer, side, pitch, color } => {
                 if self.guide.set(layer, side, pitch, color) && !self.settings_view { self.draw(); }
+            }
+            GuideCommand::SetPad { layer, pad, color } => {
+                if self.guide.set_pad(layer, pad, color) && !self.settings_view { self.draw(); }
             }
         }
         true
@@ -220,6 +223,7 @@ impl NoteApp {
             }
             _ => return,
         }
+        if !matches!(index, 21..=38) { self.guide.clear_pads(); }
         self.draw();
     }
 
@@ -235,6 +239,7 @@ impl NoteApp {
     fn shift(&mut self, amount: i16) {
         let next = self.offset() + amount;
         if !(-100..=60).contains(&next) { return; }
+        self.guide.clear_pads();
         if amount.abs() == 12 { self.octaves += amount / 12; }
         else { self.semitones += amount; }
         self.draw();
@@ -336,6 +341,24 @@ mod tests {
         assert!(note.receive_guide_sysex(&request(&[0x12])));
         assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
         assert!(!note.guide.active());
+    }
+
+    #[test]
+    fn note_pad_guide_is_absolute_and_layout_change_clears_only_pad_targets() {
+        let mut note = NoteApp::new();
+        crate::driver::take_midi();
+        note.receive_guide_sysex(&request(&[0x10]));
+        note.receive_guide_sysex(&request(&[0x20, 0, 0, 48, 13]));
+        note.receive_guide_sysex(&request(&[0x21, 0, 11, 21]));
+        assert_eq!(note.color(11), PadColor::Novation(21));
+        assert_ne!(note.color(15), PadColor::Novation(21));
+        note.shift(1);
+        assert_eq!(note.guide.pad_color(11, note.pitch(11), false, |_, _| false), None);
+        note.receive_guide_sysex(&request(&[0x21, 1, 11, 31]));
+        assert_eq!(note.color(11), PadColor::Novation(31));
+        note.receive_guide_sysex(&request(&[0x21, 1, 11, 0]));
+        assert_ne!(note.color(11), PadColor::Novation(31));
+        crate::driver::take_midi();
     }
 
     fn midi(port: MidiPort, status: u8, index: u8, value: u8) -> MidiEvent {

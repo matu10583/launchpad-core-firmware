@@ -48,6 +48,7 @@ impl CustomApp {
 
     pub fn select_default(&mut self) {
         self.release_all();
+        if self.slot != 0 || self.transpose.total() != 0 { self.guide.clear_pads(); }
         self.slot = 0;
         self.feedback = [0; 128];
         self.transpose = Transpose::new();
@@ -58,7 +59,7 @@ impl CustomApp {
     pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
         let Some(command) = guide::decode(data, guide::MODEL_X) else { return false };
         match command {
-            GuideCommand::Query => self.guide_reply(&[0x41, 0x03, 2, self.guide.active() as u8]),
+            GuideCommand::Query => self.guide_reply(&[0x41, guide::CAPABILITIES, 2, self.guide.active() as u8]),
             GuideCommand::Layout => {
                 let payload = guide::x_layout(2 + self.slot,
                     if self.slot == 0 { self.transpose.total() } else { 0 },
@@ -83,6 +84,9 @@ impl CustomApp {
             }
             GuideCommand::Set { layer, side, pitch, color } => {
                 if self.guide.set(layer, side, pitch, color) { self.refresh_pitch(pitch); }
+            }
+            GuideCommand::SetPad { layer, pad, color } => {
+                if self.guide.set_pad(layer, pad, color) { self.draw_pad(pad); }
             }
         }
         true
@@ -141,15 +145,16 @@ impl CustomApp {
     }
 
     fn draw_pad(&self, index: u8) {
-        let Some(pitch) = self.pitch(index) else { return };
+        let pitch = self.pitch(index);
         let row = index / 10;
         let col = index % 10;
         let held = self.held[((row - 1) * 8 + col - 1) as usize];
-        if let Some(color) = self.guide.pad_color(index, Some(pitch), held,
+        if let Some(color) = self.guide.pad_color(index, pitch, held,
             |side, note| guide::side_has_pitch(side, note, |pad| self.pitch(pad))) {
             led::novation(index, color);
             return;
         }
+        let Some(pitch) = pitch else { led::set(index, 0); return };
         if self.slot >= 2 {
             led::novation(index, self.feedback[pitch as usize]);
         } else {
@@ -215,6 +220,7 @@ impl CustomApp {
             self.transpose.shifted(match index { 91 => 12, 92 => -12, 93 => -1, _ => 1 })
         };
         if let Some(next) = next {
+            if self.transpose.total() != next.total() { self.guide.clear_pads(); }
             self.release_all();
             self.transpose = next;
             self.draw();
@@ -230,7 +236,15 @@ impl App for CustomApp {
         self.left_held = false; self.right_held = false;
     }
     fn on_surface(&mut self, event: SurfaceEvent) {
-        let Some(pitch) = self.pitch(event.index) else { return };
+        let Some(pitch) = self.pitch(event.index) else {
+            if let Some(slot) = guide::pad_slot(event.index) {
+                if self.held[slot] != event.pressed {
+                    self.held[slot] = event.pressed;
+                    self.draw_pad(event.index);
+                }
+            }
+            return;
+        };
         let row = event.index / 10;
         let col = event.index % 10;
         let pos = ((row - 1) * 8 + col - 1) as usize;
@@ -254,6 +268,7 @@ impl App for CustomApp {
         if !event.pressed { return; }
         if let Some(slot) = [89, 79, 69, 59].iter().position(|&index| index == event.index) {
             self.release_all();
+            if self.slot != slot as u8 { self.guide.clear_pads(); }
             self.slot = slot as u8;
             self.feedback = [0; 128];
             self.draw();
@@ -423,7 +438,7 @@ mod tests {
         app.on_enter();
         led::take_updates();
         assert!(app.receive_guide_sysex(&request(&[1])));
-        assert_eq!(response(), request(&[0x41, 0x03, 2, 0]));
+        assert_eq!(response(), request(&[0x41, 0x07, 2, 0]));
         for (slot, button, first, fifth, invalid) in [
             (0, 89, 48, 72, None),
             (1, 79, 36, 43, Some(21)),
@@ -484,7 +499,7 @@ mod tests {
         assert!(app.receive_guide_sysex(&request(&[0x11])));
         assert_eq!(response(), request(&[0x50, 0x11, 1]));
         assert!(app.receive_guide_sysex(&request(&[1])));
-        assert_eq!(response(), request(&[0x41, 0x03, 2, 1]));
+        assert_eq!(response(), request(&[0x41, 0x07, 2, 1]));
         assert!(app.receive_guide_sysex(&request(&[0x12])));
         assert_eq!(response(), request(&[0x50, 0x12, 0]));
         assert!(!app.guide.active());
@@ -516,5 +531,36 @@ mod tests {
         assert!(!app.receive_guide_sysex(&request(&[0x20, 2, 0, 48, 13])));
         assert!(crate::driver::take_midi().is_empty());
         assert!(led::take_updates().is_empty());
+    }
+
+    #[test]
+    fn pad_sysex_targets_only_one_duplicate_and_clears_on_layout_change() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        response(); led::take_updates();
+        // 15 and 71 both play 72, but only 15 may receive the physical guide.
+        assert!(app.receive_guide_sysex(&request(&[0x21, 0, 15, 13])));
+        assert_eq!(led::take_updates(), [Update::Novation(15, 13)]);
+        app.on_surface(event(15, true));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xffffff), Update::Set(71, 0xffffff)]);
+        app.on_surface(event(15, false));
+        led::take_updates(); crate::driver::take_midi();
+        assert!(app.receive_guide_sysex(&request(&[0x21, 1, 15, 21])));
+        assert_eq!(led::take_updates(), [Update::Novation(15, 21)]);
+        app.on_surface(event(15, true));
+        assert_eq!(led::take_updates(), [Update::Novation(15, 21), Update::Set(71, 0xffffff)]);
+        app.on_surface(event(15, false));
+        led::take_updates(); crate::driver::take_midi();
+        app.on_surface_raw(event(94, true));
+        assert_eq!(app.pitch(15), Some(73));
+        assert_eq!(app.guide.pad_color(15, Some(73), false, |_, _| false), None);
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x21, 1, 15, 31])));
+        assert_eq!(led::take_updates(), [Update::Novation(15, 31)]);
+        assert!(app.receive_guide_sysex(&request(&[0x21, 1, 15, 0])));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xff47ce)]);
     }
 }

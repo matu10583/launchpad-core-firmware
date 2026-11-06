@@ -108,7 +108,7 @@ impl NoteApp {
         match command {
             GuideCommand::Query => {
                 // Read-only: protocol capability bits, Note mode, session state.
-                self.guide_reply(&[0x41, 0x03, 1, self.guide.active() as u8]);
+                self.guide_reply(&[0x41, guide::CAPABILITIES, 1, self.guide.active() as u8]);
             }
             GuideCommand::Layout => {
                 let payload = guide::x_layout(u8::from(self.scale_mode),
@@ -136,6 +136,11 @@ impl NoteApp {
             GuideCommand::Set { layer, side, pitch, color } => {
                 if self.guide.set(layer, side, pitch, color) && !self.choosing {
                     self.draw();
+                }
+            }
+            GuideCommand::SetPad { layer, pad, color } => {
+                if self.guide.set_pad(layer, pad, color) && !self.choosing {
+                    Self::set_pad(pad, self.grid_color(pad));
                 }
             }
         }
@@ -262,6 +267,7 @@ impl NoteApp {
             11..=18 => self.channel = index - 11 + 8,
             _ => return,
         }
+        if !matches!(index, 21..=28 | 11..=18) { self.guide.clear_pads(); }
         settings::update(|s| {
             s.x_note_scale_mode = u8::from(self.scale_mode);
             s.x_note_scale = self.scale;
@@ -273,6 +279,7 @@ impl NoteApp {
     }
 
     fn change_transpose(&mut self, next: Transpose) {
+        if self.transpose.total() != next.total() { self.guide.clear_pads(); }
         self.release_all();
         self.transpose = next;
         self.draw();
@@ -457,7 +464,7 @@ mod tests {
         let replies = crate::driver::take_midi();
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].0, MidiPort::Midi);
-        assert_eq!(&replies[0].1[7..11], &[0x41, 0x03, 1, 0]);
+        assert_eq!(&replies[0].1[7..11], &[0x41, 0x07, 1, 0]);
     }
 
     #[test]
@@ -489,6 +496,34 @@ mod tests {
         assert!(app.receive_guide_sysex(&request(&[0x12])));
         assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
         assert!(!app.guide.active());
+    }
+
+    #[test]
+    fn x_note_pad_sysex_keeps_pitch_compatibility_but_clears_on_transpose() {
+        let request = |payload: &[u8]| {
+            let mut frame = [0; 16];
+            let len = guide::reply(payload, guide::MODEL_X, &mut frame).unwrap();
+            frame[..len].to_vec()
+        };
+        let mut app = NoteApp::new();
+        app.on_enter();
+        crate::driver::take_midi();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        crate::driver::take_midi();
+        let note = app.note_at(11).unwrap();
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 0, note, 13])));
+        assert!(app.receive_guide_sysex(&request(&[0x21, 0, 11, 21])));
+        assert_eq!(app.grid_color(11), PadColor::Novation(21));
+        let duplicate = (1..=8).flat_map(|row| (1..=8).map(move |col| row * 10 + col))
+            .find(|&pad| pad != 11 && app.note_at(pad) == Some(note));
+        if let Some(pad) = duplicate { assert_ne!(app.grid_color(pad), PadColor::Novation(21)); }
+        app.change_transpose(app.transpose.shifted(1).unwrap());
+        assert_eq!(app.guide.pad_color(11, app.note_at(11), false, |_, _| false), None);
+        assert!(app.receive_guide_sysex(&request(&[0x21, 0, 11, 31])));
+        assert_eq!(app.grid_color(11), PadColor::Novation(31));
+        assert!(app.receive_guide_sysex(&request(&[0x21, 0, 11, 0])));
+        assert_ne!(app.grid_color(11), PadColor::Novation(31));
+        crate::driver::take_midi();
     }
 
     #[test]

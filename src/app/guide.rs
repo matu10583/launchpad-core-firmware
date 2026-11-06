@@ -27,6 +27,7 @@ pub const MODEL_X: u8 = 0x0c;
 pub const MODEL_PRO_MK3: u8 = 0x0e;
 const VERSION: u8 = 1;
 pub const LEASE_TICKS: u16 = 5_000; // Both supported hosts tick once per ms.
+pub const CAPABILITIES: u8 = 0x07; // pitch guide, layout, physical-pad guide
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -36,6 +37,15 @@ pub enum Command {
     Keepalive,
     End,
     Set { layer: u8, side: u8, pitch: u8, color: u8 },
+    SetPad { layer: u8, pad: u8, color: u8 },
+}
+
+// Identical pad ordering to GET_LAYOUT: slot0=11, slot7=18, slot8=21.
+pub fn pad_slot(pad: u8) -> Option<usize> {
+    let row = pad / 10;
+    let col = pad % 10;
+    if !(1..=8).contains(&row) || !(1..=8).contains(&col) { return None; }
+    Some(((row - 1) * 8 + col - 1) as usize)
 }
 
 pub fn decode(data: &[u8], model: u8) -> Option<Command> {
@@ -60,6 +70,9 @@ pub fn decode(data: &[u8], model: u8) -> Option<Command> {
         [0x12] => Some(Command::End),
         [0x20, layer @ 0..=1, side @ 0..=2, pitch, color] => Some(Command::Set {
             layer: *layer, side: *side, pitch: *pitch, color: *color,
+        }),
+        [0x21, layer @ 0..=1, pad, color] if pad_slot(*pad).is_some() => Some(Command::SetPad {
+            layer: *layer, pad: *pad, color: *color,
         }),
         _ => None,
     }
@@ -123,17 +136,19 @@ pub fn pro_layout(layout: u8, root: u8, scale: u8, overlap: u8, offset: i16,
 pub struct Guide {
     // [side: left/right][layer: preview/current][MIDI pitch]
     colors: [[[u8; 128]; 2]; 2],
+    pad_colors: [[u8; 64]; 2], // [preview/current][GET_LAYOUT slot]
     active: bool,
     remaining: u16,
 }
 
 impl Guide {
     pub const fn new() -> Self {
-        Self { colors: [[[0; 128]; 2]; 2], active: false, remaining: 0 }
+        Self { colors: [[[0; 128]; 2]; 2], pad_colors: [[0; 64]; 2], active: false, remaining: 0 }
     }
     pub fn active(&self) -> bool { self.active }
     pub fn begin(&mut self) {
         self.colors = [[[0; 128]; 2]; 2];
+        self.clear_pads();
         self.active = true;
         self.remaining = LEASE_TICKS;
     }
@@ -142,6 +157,7 @@ impl Guide {
     }
     pub fn end(&mut self) {
         self.colors = [[[0; 128]; 2]; 2];
+        self.clear_pads();
         self.active = false;
         self.remaining = 0;
     }
@@ -164,22 +180,33 @@ impl Guide {
         self.renew();
         true
     }
+    pub fn set_pad(&mut self, layer: u8, pad: u8, color: u8) -> bool {
+        let Some(slot) = pad_slot(pad) else { return false };
+        if !self.active || layer > 1 || color > 127 { return false; }
+        self.pad_colors[layer as usize][slot] = color;
+        self.renew();
+        true
+    }
+    /// A layout change invalidates absolute-pad targets, but not legacy
+    /// pitch-based guides; clients must GET_LAYOUT again before new SET_PADs.
+    pub fn clear_pads(&mut self) { self.pad_colors = [[0; 64]; 2]; }
     pub fn color(&self, side: usize, layer: usize, pitch: u8) -> u8 {
         if self.active && side < 2 && layer < 2 { self.colors[side][layer][pitch as usize] }
         else { 0 }
     }
     pub fn pad_color(&self, index: u8, pitch: Option<u8>, held: bool,
                      mut preferred_side_has_pitch: impl FnMut(usize, u8) -> bool) -> Option<u8> {
+        if !self.active { return None; }
+        let slot = pad_slot(index)?;
         let col = index % 10;
-        if !self.active || !(1..=8).contains(&(index / 10)) || !(1..=8).contains(&col) {
-            return None;
-        }
-        let pitch = pitch?;
         let side = usize::from(col > 4);
         // Current always wins over preview, including when a hand falls back
         // to the other half. Same-layer collisions favor the local hand.
         for layer in [1, 0] {
             if held && layer == 0 { break; }
+            let direct = self.pad_colors[layer][slot];
+            if direct != 0 { return Some(direct); }
+            let Some(pitch) = pitch else { continue };
             let local = self.color(side, layer, pitch);
             if local != 0 { return Some(local); }
             let other_side = 1 - side;
@@ -245,6 +272,70 @@ mod tests {
         assert_eq!(reply(&[0x41, 1], MODEL_X, &mut response), Some(10));
         let expected = [&set[..7], &[0x41, 1, 0xf7]].concat();
         assert_eq!(&response[..10], expected.as_slice());
+        for model in [MODEL_X, MODEL_PRO_MK3] {
+            let mut frame = [0; 16];
+            let len = reply(&[0x21, 1, 88, 127], model, &mut frame).unwrap();
+            assert_eq!(len, 12);
+            assert_eq!(decode(&frame[..len], model), Some(Command::SetPad { layer: 1, pad: 88, color: 127 }));
+            let other = if model == MODEL_X { MODEL_PRO_MK3 } else { MODEL_X };
+            assert_eq!(decode(&frame[..len], other), None);
+            for payload in [[0x21, 2, 11, 1], [0x21, 1, 10, 1], [0x21, 1, 19, 1],
+                            [0x21, 1, 81 + 8, 1], [0x21, 1, 90, 1]] {
+                let len = reply(&payload, model, &mut frame).unwrap();
+                assert_eq!(decode(&frame[..len], model), None);
+            }
+            let len = reply(&[0x21, 0, 11, 0], model, &mut frame).unwrap();
+            assert_eq!(decode(&frame[..len - 1], model), None);
+            frame[9] = 128;
+            assert_eq!(decode(&frame[..len], model), None);
+        }
+    }
+
+    #[test]
+    fn pad_slots_match_both_get_layout_snapshots() {
+        let x = x_layout(0, 0, |pad| Some(pad));
+        let pro = pro_layout(0, 0, 0, 0, 0, |pad| Some(pad));
+        for row in 1..=8u8 {
+            for col in 1..=8u8 {
+                let pad = row * 10 + col;
+                let slot = pad_slot(pad).unwrap();
+                assert_eq!(slot, ((row - 1) * 8 + col - 1) as usize);
+                assert_eq!(x[13 + slot], pad);
+                assert_eq!(pro[17 + slot], pad);
+            }
+        }
+        for pad in [0, 10, 19, 20, 89, 90] { assert_eq!(pad_slot(pad), None); }
+    }
+
+    #[test]
+    fn physical_pad_targets_do_not_spread_and_layer_priority_matches_pitch_guides() {
+        let mut guide = Guide::new();
+        assert!(!guide.set_pad(0, 11, 13));
+        guide.begin();
+        guide.set(0, 1, 72, 9);
+        // The pitch appears twice, but direct targeting only colors pad 15.
+        assert!(guide.set_pad(0, 15, 13));
+        assert_eq!(guide.pad_color(15, Some(72), false, |_, _| true), Some(13));
+        assert_eq!(guide.pad_color(71, Some(72), false, |_, _| true), None);
+        assert_eq!(guide.pad_color(15, Some(72), true, |_, _| true), None);
+        assert!(guide.set_pad(1, 15, 21));
+        assert_eq!(guide.pad_color(15, Some(72), true, |_, _| true), Some(21));
+        guide.set(1, 1, 72, 31);
+        assert_eq!(guide.pad_color(15, Some(72), false, |_, _| true), Some(21));
+        assert!(guide.set_pad(1, 15, 0));
+        assert_eq!(guide.pad_color(15, Some(72), false, |_, _| true), Some(31));
+        guide.clear_pads();
+        assert_eq!(guide.pad_color(15, Some(72), false, |_, _| true), Some(31));
+        assert_eq!(guide.pad_color(11, None, false, |_, _| false), None);
+        guide.set_pad(0, 11, 13);
+        assert_eq!(guide.pad_color(11, None, false, |_, _| false), Some(13));
+        guide.end();
+        assert_eq!(guide.pad_color(11, None, false, |_, _| false), None);
+        guide.begin();
+        assert_eq!(guide.pad_color(11, None, false, |_, _| false), None);
+        guide.set_pad(0, 11, 13);
+        for _ in 0..LEASE_TICKS { guide.tick(); }
+        assert_eq!(guide.pad_color(11, None, false, |_, _| false), None);
     }
 
     #[test]

@@ -18,16 +18,19 @@ F0 7D 43 46 57 model 01 cmd [payload] F7
 
 | `cmd` | 送信payload | 動作 / 返答 |
 | --- | --- | --- |
-| `01` QUERY | なし | 読み取り専用。`41 03 mode active`（能力bit`01`左右ガイド、bit`02`レイアウト）。全機種のNote／Customで`03`。`mode=01` Note / `02` Custom；`active=00/01`。QUERYだけでは状態変更せず、Webの時間再生には必須ではない。 |
+| `01` QUERY | なし | 読み取り専用。`41 07 mode active`（能力bit`01`左右ガイド、bit`02`レイアウト、bit`04`物理パッド指定）。全機種のNote／Customで`07`。`mode=01` Note / `02` Custom；`active=00/01`。Webはパッド指定オプションON時だけ照会する。 |
 | `02` GET_LAYOUT | なし | 読み取り専用。X: `42 layout transpose+64 valid[10] pitches[64]`（全85バイト）。Xの`layout=00`Chromatic Note / `01`Scale Note / `02..05` Custom 1～4。Custom 1は現在の移調を返し、Custom 2～4はoffset 0。Pro MK3: `42 layout root scale overlap offset_low offset_high valid[10] pitches[64]`（全89バイト）。Proの`layout=02`は固定Custom、符号付きoffsetは`(offset+8192)`を下位・上位7bitに分けた値。8行×8列を下行左から上行右へ、slot0=11、slot7=18、slot8=21、slot63=88。`valid[slot/7]`のbit`slot%7`が1なら音程`pitches[slot]`有効、0ならpitch欄は0で無効。`valid[9]`のbit1～6は常に0。64バイトの音程は0～127（127も有効）。レイアウト照会は押下状態を変更しない。 |
 | `10` BEGIN | なし | ガイド状態を消し、5秒間のセッション開始。`50 10 01`を応答。 |
 | `11` KEEPALIVE | なし | セッション中のみ5秒へ更新し`50 11 01`を応答。アプリは2秒ごとに送る。 |
 | `12` END | なし | セッションを終了しガイド表示を消去、`50 12 00`を応答。 |
 | `20` SET | `layer side pitch color` | セッション中のみ受付。`layer=00`予告、`01`現在；`side=00`左4列、`01`右4列、`02`両側；`pitch=00..7F`；`color=01..7F`は固定Novationパレット番号、`00`は指定対象だけを解除。SET成功時は5秒へ更新。 |
+| `21` SET_PAD | `layer pad color` | セッション中のみ受付。`layer=00/01`はSETと同じ。`pad`は行・列とも1～8の11～88、`slot=(row-1)*8+(col-1)`に対応。同じ音程の別パッドは点灯しない。`color=01..7F`はパレット色、`00`はそのパッド・レイヤーのみ解除。返答なし。成功時はSETと同じleaseを更新。 |
 
-返答も同じヘッダと終端を使用し、**各機種のUSB演奏用MIDIポートにのみ送信**。不正なID・モデル・版・長さ・データ（`80`以上）・未知コマンドは無視。`SET`は音や演奏MIDI出力を変更せず、押下パッドIDは送信しない。問い合わせのレスポンスは試作FW特有で、通常のDAW MIDIは変更しない。
+返答も同じヘッダと終端を使用し、**各機種のUSB演奏用MIDIポートにのみ送信**。不正なID・モデル・版・長さ・データ（`80`以上）・未知コマンドは無視。`SET`／`SET_PAD`は音や演奏MIDI出力を変更しない。問い合わせのレスポンスは試作FW特有で、通常のDAW MIDIは変更しない。
 
-X Custom 1～4でもNoteと同じBEGIN／KEEPALIVE／END／SETの点灯セッションを持ち、モード退出で終了する。スロット切替時には保持したpitchごとのガイド色を新配列に再マップする。既存X Noteの応答形式・レイアウト番号は変更しない。Web側はXのlayout値`02..05`を認識する必要がある（現在は`preset<=2`のためCustom 2～4の応答を破棄）。X CustomのQUERY `mode=02`もWeb側のパーサで許可する。旧FWではCustomの点灯コマンドに応答しないため、新FWへ移行する。
+X Custom 1～4でもNoteと同じBEGIN／KEEPALIVE／END／SETの点灯セッションを持ち、モード退出で終了する。スロット切替時には保持したpitchごとのガイド色を新配列に再マップする。既存X Noteの応答形式・レイアウト番号は変更しない。Web側はXのlayout値`02..05`とQUERY `mode=02`を解釈する。旧FWではCustomの点灯コマンドに応答しないため、新FWへ移行する。
+
+物理パッド指定はピッチと独立した一時的な表示。優先順位は**現在レイヤー > 予告レイヤー**、同一レイヤー内は**SET_PAD > SET**。押下中は予告のみ隠れ、現在は押下表示より優先。配列・移調・Customスロット変更時には古いSET_PAD状態をすべて消し、SETの音程指定だけ新配列へ追従する。色解除、END、期限切れ、モード退出でも元の本体表示へ戻し、設定や永続LED状態を書き換えない。無効音程パッドも物理番号として有効（音は送らない）。Webの新オプションは機能bit`04`がない旧FWでは旧SETへフォールバックする。
 
 **アプリ移行上の注意:** 旧X専用仕様書の`valid[8]`はSysExデータの7-bit制約に反し、最上位ビットが立つ通常の配列でGET_LAYOUT応答が失敗するため、XとPro双方を`valid[10]`に修正した。Xの`model=0C`と送信コマンドは不変だが、**GET_LAYOUT応答の長さ・pitch開始位置は互換ではない**。アプリは85/89バイトを機種ごとに確認してからデコードし、旧応答を誤解釈しないこと。プロトコルは未配布の私用試作なので、この修正をv1の確定仕様とする。
 
@@ -37,7 +40,9 @@ X Custom 1～4でもNoteと同じBEGIN／KEEPALIVE／END／SETの点灯セッシ
 
 **X Note／CustomとPro MK3 Note／固定CustomでSysExガイドを使用可能。** X NoteとProの旧ch1～5／選択チャンネル入力によるLEDフィードバックは廃止。X Custom 3／4の既存通常MIDIフィードバックはガイド色より優先しない。演奏パッドのMIDI送信とProチャンネル選択UIは維持。モード退出ではガイドを消去。USB切断通知に依存せず最後のSET/KEEPALIVEから5秒で自動終了・消灯する。Webは旧方式へのフォールバックを使わない。
 
-**ローカル検証（現行変更）:** ID未指定の通常ビルドでX／Pro Mk3双方のreleaseリンク成功、ホストテスト55件成功。Xはガイド追加でFlashが溢れるため`[profile.release.package.core] opt-level="z"`を使用（周辺依存は従来の`opt-level=3`）。Webの`PrivateGuideProtocol.ts`は今回のFW作業では変更していない。X Custom 2～4の待機モードには同パーサのX `preset`型／値チェックを`layout=00..05`へ拡張し、`02..05`をCustom 1～4として解釈する変更が必須。X CustomのQUERY `mode=02`も受け入れる。旧FWの照会タイムアウトに対しては新FWへの更新が必要。
+**旧ガイド変更時の検証:** ID未指定の通常ビルドでX／Pro Mk3双方のreleaseリンク成功、ホストテスト55件成功。Xはガイド追加でFlashが溢れるため`[profile.release.package.core] opt-level="z"`を使用（周辺依存は従来の`opt-level=3`）。当時のWebにはX Custom 2～4のlayout値`03..05`とQUERY `mode=02`の解釈を追加する必要があった。
+
+**SET_PAD追加のローカル検証:** FWホストテスト66件成功（正しいモデル・コマンド長・7bit・64個のslot対応、重複音程での1パッド点灯、押下とレイヤー優先、旧SETとの共存、配列変更・END・期限切れでの解除）。X／Pro Mk3のID未指定releaseリンク成功。Web側は`27e15e0`で新オプションを実装したとの報告（Webテスト71件成功）。実機でのSysEx受信・LED表示は未確認。今回のFW変更は未push。
 
 ## 検証の限界
 

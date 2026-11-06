@@ -69,7 +69,7 @@ impl CustomNoteApp {
     pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
         let Some(command) = guide::decode(data, guide::MODEL_PRO_MK3) else { return false };
         match command {
-            GuideCommand::Query => self.guide_reply(&[0x41, 0x03, 2, self.guide.active() as u8]),
+            GuideCommand::Query => self.guide_reply(&[0x41, guide::CAPABILITIES, 2, self.guide.active() as u8]),
             GuideCommand::Layout => {
                 let payload = guide::pro_layout(2, 0, 0, 0, self.transpose(),
                     |index| Self::pitch(index, self.transpose()));
@@ -93,6 +93,9 @@ impl CustomNoteApp {
             }
             GuideCommand::Set { layer, side, pitch, color } => {
                 if self.guide.set(layer, side, pitch, color) && !self.channel_view { self.redraw(); }
+            }
+            GuideCommand::SetPad { layer, pad, color } => {
+                if self.guide.set_pad(layer, pad, color) && !self.channel_view { self.redraw(); }
             }
         }
         true
@@ -149,6 +152,7 @@ impl CustomNoteApp {
     }
 
     fn arrow(&mut self, index: u8, pressed: bool) {
+        let before = self.transpose();
         let (pair, side, step) = match index {
             80 => (0, 0, 12), 70 => (0, 1, -12),
             91 => (1, 0, -1), 92 => (1, 1, 1),
@@ -172,6 +176,7 @@ impl CustomNoteApp {
                 else { self.semitones += step; }
             }
         }
+        if self.transpose() != before { self.guide.clear_pads(); }
         self.redraw();
     }
 
@@ -305,6 +310,26 @@ mod tests {
         assert!(app.receive_guide_sysex(&request(&[0x12])));
         assert_eq!(crate::driver::take_midi(), [(MidiPort::Midi, request(&[0x50, 0x12, 0]))]);
         assert!(!app.guide.active());
+    }
+
+    #[test]
+    fn custom_pad_guide_does_not_color_the_duplicate_and_clears_on_transpose() {
+        let mut app = C::new();
+        crate::driver::take_midi();
+        app.receive_guide_sysex(&request(&[0x10]));
+        app.receive_guide_sysex(&request(&[0x21, 0, 15, 13]));
+        assert_eq!(app.color(15), PadColor::Novation(13));
+        assert_ne!(app.color(71), PadColor::Novation(13)); // both have pitch 72
+        app.on_surface(SurfaceEvent { index: 15, pressed: true, value: 70 });
+        assert_eq!(app.color(15), PadColor::Rgb(0xffffff));
+        app.on_surface(SurfaceEvent { index: 15, pressed: false, value: 0 });
+        app.receive_guide_sysex(&request(&[0x21, 1, 15, 21]));
+        app.on_surface(SurfaceEvent { index: 15, pressed: true, value: 70 });
+        assert_eq!(app.color(15), PadColor::Novation(21));
+        app.on_surface(SurfaceEvent { index: 15, pressed: false, value: 0 });
+        app.arrow(92, true);
+        assert_eq!(app.guide.pad_color(15, C::pitch(15, app.transpose()), false, |_, _| false), None);
+        crate::driver::take_midi();
     }
 
     #[test]
