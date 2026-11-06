@@ -38,6 +38,34 @@ F0 7D 43 46 57 0E 01 70 01 28 [GPIOA pin0..15 (16 bytes)] ... [GPIOF pin0..15] F
 
 追加の外部USB→DINアダプタを持つ場合だけ、従来の`tools/pro_mk3_din_probe.py`も選べる。**今回の実機確認には不要。** ブラウザもPythonも実機ではまだ未検証。
 
+### 公開純正FWによるオフデバイス調査（実機操作なし）
+
+- [Novation Componentsの公開FW一覧](https://components.novationmusic.com/api/v2/firmwares)には`product: launchpad-pro-mk3`の純正v1.2.2（build 483、ID 153）が掲載され、[配布先](https://components.novationmusic.com/api/v2/firmwares/153/file)から`.syx`を取得できる（配布先はリダイレクトされる）。`python3 tools/syxtool.py --to-bin <取得したsyx> <出力bin>`で展開でき、展開後458752バイトの先頭はSTM32向けベクタテーブル（初期SP=`0x20000400`、リセットベクタ=`0x0807B539`）だった。M0専用FWや別製品M-VAVE FM-1のFWではなく、Pro Mk3メインMCU用イメージを調べられる。**これは書込みを推奨するものではない。**
+- 展開イメージのオフセット`0x67338`付近に`USART1`ベースアドレス`0x40011000`と値`0x1C442`（115778）が、`0x67388`付近に`UART4`ベースアドレス`0x40004C00`と値`0x7AAF`（31407）が、`0x673D8`付近に`UART7`ベースアドレス`0x40007800`と値`0x7AAF`（31407）が、`0x67428`付近に`UART5`ベースアドレス`0x40005000`と値`0x5B3EF5`（既存コードのM0通信速度定数と一致）が並ぶ。これらは**UART初期化構造体のボーレート指定と思われるが、逆アセンブルによる使用経路の確認は未実施**。`UART8`のベースアドレスもイメージに現れるが、この構造体群では対応する速度値を確認できない。UART4は現行FWの`0x32`診断対象外で、公開イメージだけではDIN Inに接続しているUARTを判定できない。
+- 現行FWの設定はHSE=24MHz、SYSCLK=216MHz、APB1=54MHz、APB2=108MHz。通常の16倍オーバーサンプリング、PCLKを直接使うという**仮定**なら、31250bps用のBRRはUART7/8/4（APB1）で`0x6C0`（1728）、USART1（APB2）で`0xD80`（3456）。実機のUART7/8=`0x67E`（1662）、USART1=`0x3AA`（938）はこれと一致しない。ただし実際のクロック・オーバーサンプリング・UARTの用途は未確認で、この不一致だけで配線も故障原因も断定しない。
+- 前項までの調査ではGPIO名とUART4の初期化経路を追えていなかった。次項の追加資料により静的解析上のDIN候補はUART4/PC11まで絞れた。ただし実機で受信したMIDIバイトはまだ確認していない。
+
+### 純正FWの名前付きGPIO設定とDIN UART4（追加調査）
+
+提供された`launchpad_pro_mk3_midi_pinout.txt`は[Launchpad Firmware Utilityの純正FWコピー385](https://github.com/mat1jaczyyy/LP-Firmware-Utility/blob/master/firmware/old/LPProMK3-385.bin)および[465](https://github.com/mat1jaczyyy/LP-Firmware-Utility/blob/a387645e8725b93e698730cc8f8d10153c1ddb3b/firmware/stock/LPProMK3-465.bin)の静的解析を記録している。メモによると、FW中の`LPP3_BSP_MIDIDIN.c`にある名前付きGPIO設定と初期化経路は次の通り（端子への実配線は未実測）。
+
+| FWの名前 | GPIO / 設定 | 役割 |
+| --- | --- | --- |
+| `MIDI0Rx` | PC11 / AF8 | UART4 RX、DIN In候補 |
+| `MIDI0Tx` | PA0 / AF8 | UART4 TX、Out 1相当と推定 |
+| `MIDI1Tx` | PE8 / AF8 | UART7 TX、Out 2相当と推定 |
+| `MIDI1ThruMode` | PA7 / GPIO出力 | Out 2 / Thru切替候補。Low/Highの意味は未確定 |
+
+手元でComponentsから取得済みの**別バージョン483**（前項）の展開イメージでも、この4件の28バイトGPIO設定が各1か所、ファイル内オフセット`0x63208`、`0x63224`、`0x63240`、`0x6325C`でメモの記載値と一致した。`LPP3_BSP_MIDIDIN.c`、`MIDI0Tx`、`MIDI0Rx`、`MIDI1Tx`、`MIDI1ThruMode`という文字列も確認した。ただし483で関数の呼出経路やCR2書込みまで独立に逆アセンブルしたわけではない。385/465についてのGPIO初期化の呼出経路、UART4 RDR受信処理、UART4/UART7の`CR2.TXINV=1`書込み確認は提供メモによる解析結果。実装時にはTX反転を考慮し、純正FWの31,407というボーレート指定値を現行FWへ丸写ししない。PA7の切替方向も決め打ちしない。
+
+現行CoreFWのGPIO設定読取でPC11は`mode=0`（入力）、PA0とPA7も`mode=0`であり、現行FWは純正のDIN初期化を再現していない。従来のUART診断`0x32`は**UART4を対象にしていなかった**ため、UART7/8/USART1の状態がペダル操作で変わらなかったことはUART4/PC11の否定材料にならない。次はUART4/PC11のみに絞った受信確認を設計し、CC64バイトの取得を実機で検証してからDIN In→USB転送を実装する。UART5（PC12/PD2）は内部M0用のまま維持する。Out 1/Out 2とPA7の意味は別途実機確認する。
+
+#### UART4 / PC11の限定受信診断（新しいFWでのみ利用可能）
+
+通常のPro Mk3ビルドに追加した専用SysEx `F0 7D 43 46 57 0E 01 33 F7`は、**要求を受けたときだけ**PC11をAF8・プルアップにし、UART4をAPB1=54MHzから計算した31250bps・8N1・RXのみで40msポーリングする。既にUART4のクロックがONなら周辺回路に触れず`status=1`で拒否。正常終了時はUART4を無効にし、PC11の元のモード・AF・プル設定とUART4/GPIOCクロックの有効状態を戻す。UART4 TX（PA0）、UART7（PE8）、PA7、UART5/M0、USB設定、フラッシュには触れない。40msの間は既存のGPIO診断と同様にメインループの通常処理が遅れる。実機ではまだ未試験であり、**DIN→USB転送機能ではない**。
+
+応答は`F0 7D 43 46 57 0E 01 73 [status] [count] [FE] [ORE] [hi,lo]×count F7`。`status=0`は収集完了、`1`はUART4使用中、`2`は32バイトの収集上限超過。`FE`と`ORE`は各最大127、`hi/lo`は受信バイトの上位／下位4bitで、MIDIステータスの最上位ビットも失わない。FE/OREがある測定のバイトは誤りを含む可能性がある。専用ページ[`tools/pro_mk3_uart4_rx.html`](tools/pro_mk3_uart4_rx.html)はUSB MIDIポートだけに診断要求を出し、外部サステイン機器がMIDI Inへ送るバイトを表示する。**旧診断FWは`0x33`に応答しない。** 旧`0x30`～`0x32`は変更していない。実機へのFW書込みはユーザーのみ。ビルドのリビジョンとPro Mk3用ZIPを確認し、復旧用FWを残してから実施する。
+
 ## ビルドと制約
 
 通常のPro Mk3ビルド（追加feature不要）:

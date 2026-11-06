@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Opt-in, read-only DIN pin discovery. NOT a MIDI receiver or pin assignment.
-//! Never change GPIO modes, UARTs, M0, USB or flash here.
+//! Opt-in DIN diagnostics; 0x33 temporarily samples the stock MIDI0 RX path.
+//! Never change UART5/M0, TX pins, USB or flash here.
 use crate::app::guide;
 use crate::driver;
 use crate::sys::midi::MidiPort;
@@ -15,6 +15,8 @@ const WINDOW_MS: u64 = 40;
 const RESPONSE_LEN: usize = 2 + 3 + 2 + 3 + 6 * 16 + 1;
 const CONFIG_RESPONSE_LEN: usize = 2 + 3 + 2 + 3 + 16 * 4 + 1;
 const UART_RESPONSE_LEN: usize = 2 + 3 + 2 + 2 + 1 + 4 * 5 + 1;
+const DIN_RX_CAPACITY: usize = 32;
+const DIN_RESPONSE_LEN: usize = 2 + 3 + 2 + 5 + DIN_RX_CAPACITY * 2 + 1;
 const _: () = assert!(
     RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
 );
@@ -27,6 +29,97 @@ const _: () = assert!(
 const _: () = assert!(
     UART_RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
 );
+const _: () = assert!(
+    DIN_RESPONSE_LEN.div_ceil(3) <= crate::sys::driver::common::usb::midi::MIDI_TX_MAX_PACKET_COUNT
+);
+const _: () = assert!(
+    DIN_RESPONSE_LEN.div_ceil(3) < crate::sys::driver::common::usb::queues::MIDI_TX_QUEUE_SIZE
+);
+
+// STM32F745 UART4_RX PC11 AF8, as identified in the stock MIDI0Rx GPIO
+// configuration. 54 MHz APB1 / 31,250 = 1,728 (16x oversampling).
+const UART4: usize = 0x4000_4c00;
+const RCC_APB1ENR: usize = 0x4002_3840;
+const UART4_EN: u32 = 1 << 19;
+const GPIOC: usize = 0x4002_0800;
+const PC11_SHIFT: u32 = 22;
+const PC11_AF_SHIFT: u32 = 12;
+
+fn din_rx_snapshot(data: &[u8]) -> bool {
+    let mut request = [0u8; 16];
+    let Some(len) = guide::reply(&[0x33], guide::MODEL_PRO_MK3, &mut request) else { return false };
+    if data != &request[..len] { return false; }
+
+    let read = |addr: usize| unsafe { core::ptr::read_volatile(addr as *const u32) };
+    let write = |addr: usize, value| unsafe { core::ptr::write_volatile(addr as *mut u32, value) };
+    let previous_clock = read(RCC_APB1ENR);
+    // Do not interfere with any other firmware that may have enabled UART4.
+    let mut payload = [0u8; 5 + DIN_RX_CAPACITY];
+    payload[0] = 0x73;
+    if previous_clock & UART4_EN != 0 {
+        payload[1] = 1; // busy; all other fields zero
+    } else {
+        let ahb_clock = read(RCC_AHB1ENR);
+        write(RCC_AHB1ENR, ahb_clock | (1 << 2));
+        let moder = read(GPIOC);
+        let pupdr = read(GPIOC + 0x0c);
+        let afrh = read(GPIOC + 0x24);
+
+        // Do not enable TX. Configure only PC11 for the duration of the
+        // capture; RX-only UART4 never forwards received bytes to USB.
+        write(GPIOC + 0x24, (afrh & !(0xf << PC11_AF_SHIFT)) | (8 << PC11_AF_SHIFT));
+        write(GPIOC + 0x0c, (pupdr & !(3 << PC11_SHIFT)) | (1 << PC11_SHIFT));
+        write(GPIOC, (moder & !(3 << PC11_SHIFT)) | (2 << PC11_SHIFT));
+        write(RCC_APB1ENR, previous_clock | UART4_EN);
+        let _ = read(RCC_APB1ENR);
+        write(UART4, 0);
+        write(UART4 + 0x04, 0); // CR2: no RX inversion
+        write(UART4 + 0x08, 0); // CR3: no DMA
+        write(UART4 + 0x0c, 1728); // BRR: 31,250 at APB1=54MHz
+        write(UART4 + 0x18, 1 << 3); // RQR.RXFRQ: discard a stale byte
+        write(UART4 + 0x20, 0x0f); // clear initial PE/FE/NF/ORE
+        write(UART4, 1 | 1 << 2); // UE | RE; TE stays off
+
+        let start = embassy_time::Instant::now();
+        while start.elapsed().as_millis() < WINDOW_MS {
+            let isr = read(UART4 + 0x1c);
+            if isr & (1 << 1) != 0 { payload[3] = payload[3].saturating_add(1).min(127); }
+            if isr & (1 << 3) != 0 { payload[4] = payload[4].saturating_add(1).min(127); }
+            if isr & (1 << 5) != 0 {
+                let byte = read(UART4 + 0x24) as u8;
+                if payload[2] < DIN_RX_CAPACITY as u8 {
+                    payload[5 + payload[2] as usize] = byte;
+                    payload[2] += 1;
+                } else {
+                    // Count discarded bytes, including non-7-bit status bytes.
+                    payload[1] = 2;
+                }
+            }
+            if isr & 0x0f != 0 { write(UART4 + 0x20, isr & 0x0f); }
+        }
+        write(UART4, 0);
+        write(RCC_APB1ENR, previous_clock);
+        write(GPIOC, (read(GPIOC) & !(3 << PC11_SHIFT)) | (moder & (3 << PC11_SHIFT)));
+        write(GPIOC + 0x0c, (read(GPIOC + 0x0c) & !(3 << PC11_SHIFT)) | (pupdr & (3 << PC11_SHIFT)));
+        write(GPIOC + 0x24, (read(GPIOC + 0x24) & !(0xf << PC11_AF_SHIFT)) | (afrh & (0xf << PC11_AF_SHIFT)));
+        write(RCC_AHB1ENR, ahb_clock);
+    }
+
+    // MIDI SysEx cannot contain raw status bytes. Split each sampled byte
+    // into two 7-bit-safe nibbles; 32 bytes + header fits in one TX batch.
+    let count = payload[2] as usize;
+    let mut encoded = [0u8; 5 + DIN_RX_CAPACITY * 2];
+    encoded[..5].copy_from_slice(&payload[..5]);
+    for (index, &byte) in payload[5..5 + count].iter().enumerate() {
+        encoded[5 + index * 2] = byte >> 4;
+        encoded[6 + index * 2] = byte & 15;
+    }
+    let mut response = [0u8; 2 + 3 + 2 + 5 + DIN_RX_CAPACITY * 2 + 1];
+    if let Some(len) = guide::reply(&encoded[..5 + count * 2], guide::MODEL_PRO_MK3, &mut response) {
+        driver::send_midi(MidiPort::Midi, &response[..len]);
+    }
+    true
+}
 
 // USART1, UART7, UART8 are the AF candidates in the GPIO snapshot. UART5
 // is the known M0 link, read as a reference. Never read RDR: it consumes data.
@@ -130,6 +223,7 @@ fn capture() -> [[u8; 16]; 6] {
 /// F0 <guide ID> C F W 0E 01 30 F7 -> response payload 70 01 28
 /// followed by 6x16 saturating edge counts for GPIO A..F, pins 0..15.
 pub fn execute(data: &[u8]) -> bool {
+    if din_rx_snapshot(data) { return true; }
     if config_snapshot(data) { return true; }
     if uart_snapshot(data) { return true; }
     let mut request = [0u8; 16];

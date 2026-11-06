@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'">
+<title>Pro Mk3 UART4 DIN In 受信診断</title>
+<style>
+  :root { font: 16px system-ui,sans-serif; color-scheme: light dark }
+  body { max-width: 800px; margin: 2em auto; padding: 0 1em; line-height: 1.6 }
+  label { display: block; margin: 1em 0 }
+  select { display: block; width: min(100%,600px); padding: .5em }
+  button { padding: .6em 1em; margin: .3em }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 35em; overflow-y: auto; border: 1px solid #888; padding: 1em }
+</style>
+<h1>Pro Mk3 UART4 / PC11 受信診断</h1>
+<p>専用SysEx 33に対応した<strong>新しいPro Mk3診断FW</strong>が必要です。既存の診断FWでは動きません。測定要求の40msだけUART4 RX/PC11を設定し、受信バイトを表示します。DIN→USBの自動転送、UART4 TX、Out/Thru、内部M0のUART5には触れません。演奏中は実行しないでください。</p>
+<p>接続：サステイン送信機器のMIDI Out → Pro Mk3 MIDI In、Pro Mk3 → PCへUSB。ページからCC64は送信しません。押下・解放を8秒間繰り返してください。</p>
+<button id="connect">Web MIDI SysExを許可</button>
+<label>Pro Mk3 USB MIDI 入力（DAWではない）<select id="input"></select></label>
+<label>Pro Mk3 USB MIDI 出力（DAWではない）<select id="output"></select></label>
+<label>SysEx ID（通常7D）<input id="id" value="7D" maxlength="2"></label>
+<button id="run" disabled>3秒後に受信診断を開始</button><button id="stop" disabled>停止</button><button id="copy" disabled>結果をコピー</button>
+<p id="status" role="status">未接続</p><pre id="log"></pre>
+<script>
+// BEGIN PURE PROTOCOL
+const FIXED = [0x43, 0x46, 0x57, 0x0e, 0x01];
+function parseDinResponse(bytes, id) {
+  const prefix = [0xf0, id, ...FIXED, 0x73];
+  if (!prefix.every((byte, i) => bytes[i] === byte) || bytes.at(-1) !== 0xf7 || bytes.length < prefix.length + 4 + 1) return null;
+  const [status, count, fe, ore] = bytes.slice(prefix.length, prefix.length + 4);
+  if (status > 2 || count > 32 || fe > 127 || ore > 127 || bytes.length !== prefix.length + 4 + count * 2 + 1) return null;
+  const nibbles = bytes.slice(prefix.length + 4, -1);
+  if (Array.from(nibbles).some(v => v > 15)) return null;
+  return {status, fe, ore, data: Array.from({length: count}, (_, i) => (nibbles[2 * i] << 4) | nibbles[2 * i + 1])};
+}
+// END PURE PROTOCOL
+let access, running = false, cancelled = false;
+const el = id => document.getElementById(id);
+const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+const log = line => { el('log').textContent += line + '\n'; };
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+el('connect').onclick = async () => {
+  try {
+    if (!navigator.requestMIDIAccess || !window.isSecureContext) throw Error('Chrome/Edgeの安全なコンテキストで開いてください');
+    access = await navigator.requestMIDIAccess({sysex: true});
+    for (const [select, ports] of [[el('input'),access.inputs],[el('output'),access.outputs]]) {
+      select.replaceChildren(new Option('選択してください',''));
+      for (const port of ports.values()) select.add(new Option(port.name,port.id));
+    }
+    el('run').disabled = false;
+    el('status').textContent = 'Pro Mk3のUSB MIDI入出力を選択してください';
+  } catch (error) { el('status').textContent = error.message; }
+};
+function request(input, output, id) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const finish = (fn, value) => { clearTimeout(timer); input.removeEventListener('midimessage', receive); fn(value); };
+    const receive = event => {
+      const frame = parseDinResponse(event.data, id);
+      if (frame) finish(resolve, frame);
+    };
+    input.addEventListener('midimessage', receive);
+    timer = setTimeout(() => finish(reject, Error('受信応答なし：新しいFW・USB MIDIポート・SysEx IDを確認してください')), 2000);
+    try { output.send([0xf0,id,...FIXED,0x33,0xf7]); } catch (error) { finish(reject,error); }
+  });
+}
+el('stop').onclick = () => { cancelled = true; el('status').textContent = '現在の40ms測定終了後に停止します'; };
+el('run').onclick = async () => {
+  if (running) return;
+  running = true; cancelled = false;
+  el('run').disabled = true; el('stop').disabled = false; el('copy').disabled = true; el('log').textContent = '';
+  try {
+    const input = access?.inputs.get(el('input').value), output = access?.outputs.get(el('output').value);
+    if (!input || !output || /DAW/i.test(`${input.name} ${output.name}`)) throw Error('Pro Mk3の演奏用USB MIDI入出力を選んでください（DAWは不可）');
+    if (!/^[0-7][0-9a-f]$/i.test(el('id').value) || el('id').value === '00') throw Error('SysEx IDは01～7Fの2桁');
+    const id = parseInt(el('id').value,16);
+    await Promise.all([input.open(),output.open()]);
+    log(`Input: ${input.name} / Output: ${output.name} / SysEx ID: ${hex([id])}`);
+    for (let t=3;t>0 && !cancelled;t--) { el('status').textContent = `${t}秒後からサステインを踏む・離す操作を繰り返してください`; await wait(1000); }
+    for (let i=0;i<40 && !cancelled;i++) {
+      el('status').textContent = `測定中 ${i+1}/40（タブを前面に）`;
+      const {status,fe,ore,data} = await request(input,output,id);
+      log(`${i+1}: status=${status} FE=${fe} ORE=${ore} bytes=${hex(data) || '(none)'}`);
+      if (status === 1) throw Error('UART4は既に使用中です。診断で上書きしません');
+      if (!cancelled) await wait(160);
+    }
+    el('status').textContent = '終了。結果を共有してください。受信バイトがなくてもDINの故障とは断定できません。';
+    el('copy').disabled = false;
+  } catch (error) { log(`ERROR: ${error.message}`); el('status').textContent = `診断失敗: ${error.message}`; el('copy').disabled = false; }
+  finally { running = false; el('stop').disabled = true; el('run').disabled = !access; }
+};
+el('copy').onclick = async () => {
+  try { await navigator.clipboard.writeText(el('log').textContent); el('status').textContent = 'コピーしました'; }
+  catch (error) { el('status').textContent = 'コピーできません。結果欄を選択してコピーしてください'; }
+};
+</script>
+</html>
