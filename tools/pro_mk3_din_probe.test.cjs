@@ -70,7 +70,7 @@ test('UART snapshot reads 32-bit register values without accepting wrong index',
 test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async () => {
   assert.doesNotMatch(html, /id="din-out"/);
   const elements = new Map();
-  for (const id of ['connect', 'run', 'stop', 'copy', 'log', 'status', 'pro-in', 'pro-out', 'id']) {
+  for (const id of ['connect', 'run', 'stop', 'copy', 'log', 'status', 'pro-in', 'pro-out', 'id', 'control']) {
     elements.set('#' + id, {
       value: id === 'pro-in' ? 'in' : id === 'pro-out' ? 'out' : id === 'id' ? '7D' : '',
       textContent: '', disabled: id === 'run' || id === 'stop' || id === 'copy',
@@ -96,9 +96,12 @@ test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async (
         return;
       }
       if (bytes[7] === 0x32) {
-        assert.deepEqual(Array.from(bytes.slice(8)), [uarts++, 0xf7]);
+        assert.deepEqual(Array.from(bytes.slice(8)), [uarts % 4, 0xf7]);
+        const after = uarts >= 4;
+        uarts++;
+        const regs = [0, 0, 0, after && bytes[8] === 1 ? 8 : 0];
         receive({data: Uint8Array.from([0xf0, 0x7d, ...FIXED_IN_TEST, 0x72, bytes[8], 1,
-          ...Array(20).fill(0), 0xf7])});
+          ...regs.flatMap(value => [value, 0, 0, 0, 0]), 0xf7])});
         return;
       }
       assert.deepEqual(Array.from(bytes.slice(7)), [0x30, 0xf7]);
@@ -124,7 +127,8 @@ test('browser run needs only Pro Mk3 USB in/out and never sends a CC64', async (
   await elements.get('#run').onclick();
   assert.ok(requests >= 4);
   assert.equal(configs, 6);
-  assert.equal(uarts, 4);
+  assert.equal(uarts, 8);
+  assert.match(elements.get('#log').textContent, /UART7: RXNE 0→0, ORE 0→1, FE 0→0/);
   assert.match(elements.get('#log').textContent, /GPIOD2: baseline max 0, active max 2, \+2/);
   assert.equal(elements.get('#copy').disabled, false);
 });

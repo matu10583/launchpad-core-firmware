@@ -17,7 +17,7 @@
   .warning { border-left: 4px solid #bf6930; padding-left: 1em }
 </style>
 <h1>Launchpad Pro Mk3 · DIN In 診断</h1>
-<p class="warning">このページは<strong>DINを修理しません</strong>。GPIO設定とUART状態の読み取り（コマンド31/32）を含む新しいPro Mk3診断FWが必要です。DIN配線を推測してピンやUARTを設定しません。ゼロでもDINが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
+<p class="warning">このページは<strong>DINを修理しません</strong>。GPIO設定とUART状態の読み取り（コマンド31/32）を含むPro Mk3診断FWが必要です。サステイン操作の前後でUART状態も比較しますが、DIN配線を推測してピンやUARTを設定しません。OREは一度立つと残るため、対照試験とペダル操作試験の間は本体をUSBから切り離して再接続してください。差分ゼロでもDINが無いとは断定できません。</p>
 <p>接続：<strong>手元のサステイン送信機器 → Pro Mk3 MIDI In、Pro Mk3 → PCへUSB</strong>。追加のDINアダプタは不要です。Chrome/EdgeのWeb MIDI SysEx許可が必要です。このHTMLから外部の機器へCC64は送りません。</p>
 <button id="connect">MIDI機器へのアクセスを許可</button>
 <fieldset>
@@ -26,6 +26,7 @@
   <label>Pro Mk3 USB MIDI 出力（診断要求）<select id="pro-out"><option value="">選択してください</option></select></label>
   <label>診断SysEx ID（通常は7D）<input id="id" value="7D" maxlength="2" autocomplete="off" spellcheck="false"></label>
 </fieldset>
+<label><input id="control" type="checkbox" style="width:auto">対照試験：今回はサステインを操作しない</label>
 <button id="run" disabled>診断開始（基準値→8秒間の手動操作）</button>
 <button id="stop" disabled>途中で止める</button>
 <button id="copy" disabled>結果をコピー</button>
@@ -148,9 +149,11 @@ get('#run').onclick = async () => {
   get('#log').textContent = '';
   try {
     const ports = selectedPorts();
+    const control = get('#control').checked;
     await Promise.all([ports.input.open(), ports.output.open()]);
     append(`Pro input: ${ports.input.name} / Pro output: ${ports.output.name}`);
     append(`SysEx ID: ${ports.manufacturerId.toString(16).toUpperCase().padStart(2, '0')}`);
+    append(`Condition: ${control ? 'control (no sustain operation)' : 'sustain operated during active snapshots'}`);
     report('基準値を測定中：まだサステインを操作しないでください');
     const baselineFrames = [];
     for (let i = 0; i < 3 && !cancelled; i++) {
@@ -173,29 +176,40 @@ get('#run').onclick = async () => {
     }
     if (cancelled) { report('中断しました'); return; }
     append('UART状態の読み取り（RDRは読まない、状態変更なし）:');
+    const beforeUarts = [];
     for (let index = 0; index < 4 && !cancelled; index++) {
       const name = ['USART1', 'UART7', 'UART8', 'UART5 (内部M0通信)'][index];
       const frame = await uartSnapshot(ports.input, ports.output, ports.manufacturerId, index);
+      beforeUarts.push(frame.result);
       append(`uart ${name}: ${frame.raw}`);
       const {clock, cr1, cr3, brr, isr} = frame.result;
       append(`${name}: clock=${Number(clock)}, UE=${Number(!!(cr1 & 1))}, RE=${Number(!!(cr1 & 4))}, RXNE=${Number(!!(isr & 32))}, ORE=${Number(!!(isr & 8))}, BRR=0x${brr.toString(16).toUpperCase()}, CR3=0x${cr3.toString(16).toUpperCase()}`);
     }
     if (cancelled) { report('中断しました'); return; }
     for (let remaining = 3; remaining > 0 && !cancelled; remaining--) {
-      report(`${remaining}秒後に開始：サステインを踏む・離す操作を8秒間繰り返してください`);
+      report(`${remaining}秒後に開始：${control ? '8秒間サステインを操作せずに待ってください' : 'サステインを踏む・離す操作を8秒間繰り返してください'}`);
       await delay(1000);
     }
     if (cancelled) { report('中断しました'); return; }
     const active = [];
     const started = performance.now();
     for (let i = 0; i < 40 && performance.now() - started < 8000 && !cancelled; i++) {
-      report(`サステインを繰り返し踏む・離す：${i + 1}/40 を測定中（タブを前面に）`);
+      report(`${control ? '対照試験・サステインを操作しない' : 'サステインを繰り返し踏む・離す'}：${i + 1}/40 を測定中（タブを前面に）`);
       const frame = await snapshot(ports.input, ports.output, ports.manufacturerId);
       active.push(frame.edges);
       append(`active ${i + 1}: ${frame.raw}`);
       if (!cancelled) await delay(160);
     }
     if (!active.length) { report('有効な観測なしで中断しました'); return; }
+    append('サステイン操作後のUART状態（RDRは読まない、状態変更なし）:');
+    for (let index = 0; index < 4; index++) {
+      const name = ['USART1', 'UART7', 'UART8', 'UART5 (内部M0通信)'][index];
+      const frame = await uartSnapshot(ports.input, ports.output, ports.manufacturerId, index);
+      const before = beforeUarts[index];
+      append(`uart after ${name}: ${frame.raw}`);
+      append(`${name}: RXNE ${Number(!!(before.isr & 32))}→${Number(!!(frame.result.isr & 32))}, ORE ${Number(!!(before.isr & 8))}→${Number(!!(frame.result.isr & 8))}, FE ${Number(!!(before.isr & 2))}→${Number(!!(frame.result.isr & 2))}`);
+    }
+    append('OREの増加は受信活動の手掛かりですが、MIDIデータ・DIN配線・31250bps受信の証明ではありません。増加ゼロでもDINを否定できません。');
     append(`Active snapshots: ${active.length}（各40ms、間隔あり）`);
     const baseline = baselineFrames[0].map((_, index) => Math.max(...baselineFrames.map(frame => frame[index])));
     const observed = baseline.map((_, index) => Math.max(...active.map(frame => frame[index])));
