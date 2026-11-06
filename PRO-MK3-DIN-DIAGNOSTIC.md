@@ -1,6 +1,6 @@
 # Pro Mk3 DIN In → USB / CC64 調査用（通常Proビルドに同梱、実験機能）
 
-**経過:** 旧CoreFWはDIN未実装だった。新しい通常Pro Mk3ビルドにはUART4/PC11のDIN In→USB MIDI転送を追加したが、**転送を有効にしたFWでの実機試験はまだ**。Out 1／Out 2／Thruは未実装。内部UART5はM0ボタン・LED用のためDINとして再設定しない。
+**経過:** 旧CoreFWはDIN未実装だった。UART4/PC11のDIN In→USB MIDI転送は、Pro Mk3でCC64のオン・オフを実機確認済み。Out 1／Out 2／Thruは未実装。内部UART5はM0ボタン・LED用のためDINとして再設定しない。
 
 `pro-din-probe`はPro Mk3専用の一時診断機能。**通常のPro Mk3 TeamCityビルドに含むが、専用SysExを受け取るまでは実行しない。X用ビルドには含まれない。** MIDI用USBポートで `F0 7D 43 46 57 0E 01 30 F7` を受けたときだけ、GPIO A～F の**現在の入力レジスタ**を40ms読み、各ピンの変化回数をUSB SysExで返す。GPIOのモード・代替機能・プルアップ・出力レベルやUART/M0を変更しない。ただしGPIOポートのクロックはONになり、40msだけ通常の入力処理が遅れる。診断中は演奏しないこと。返信形式:
 
@@ -73,6 +73,8 @@ F0 7D 43 46 57 0E 01 70 01 28 [GPIOA pin0..15 (16 bytes)] ... [GPIOF pin0..15] F
 PC11をAF8・プルアップ、UART4を31250bps／RXのみで常時初期化し、UART4割込みの受信バイトを専用256バイトリングに蓄積する。メインループからUSBの**MIDIポート（DAWではない）**へ、MIDIチャンネルメッセージ、ランニングステータス、対応するシステムコモン／リアルタイムを転送する。受信エラー・リング溢れでは不完全なメッセージを破棄してパーサをリセットする。現段階ではSysExを転送しない。Out 1/Out 2/ThruおよびM0用UART5を変更しない。旧`0x33`の読み取り診断は、UART4が稼働中なので`status=1`を返す（これは正常）。新FWの受信確認には、送信しない[USB MIDI監視ページ](tools/pro_mk3_din_monitor.html)を使用する。
 
 この転送経路の実機検証はユーザーが行う。成功したTeamCity Pro Mk3ビルドのリビジョンとZIP内のPro Mk3用`.syx`を照合し、以前の正常なFW／復旧手段を残す。送信機器 → 本体MIDI In、本体USB → PCのみ接続し、演奏用USB MIDI入力でCC64 on/offを観察する。MIDIループバックを無効にし、パッド／LEDが不安定なら停止・復旧する。PCにPythonや外部USB→DINアダプタは不要。
+
+**転送版の実機結果:** コミット`a227c2b`のPro Mk3通常ビルド（TeamCity #19／ID 2326は同リビジョンでSUCCESS）の後、USB MIDI入力`MIDIIN2 (Launchpad Pro MK3)`で、DIN接続のサステイン操作から`B0 40 7F`（ch1 CC64 on）と`B0 40 00`（off）がそれぞれ2回届いたとユーザーが報告。監視ページはMIDIを送信しない。**DIN In→USBのCC64転送を実機で確認**。ほかのチャンネルメッセージ、ランニングステータス、SysEx、連続高負荷時の欠落、Out 1/Out 2/Thruの動作まで実証したものではない。Out/Thruの端子・PA7方向を確定するには出力を受ける機器か導通測定等が必要で、今回の「外部機器→MIDI In、本体→PCへUSB」だけでは確認できない。現状の入力を壊さないよう、未確認のOut/Thruを推測で有効化しない。
 
 ## ビルドと制約
 
