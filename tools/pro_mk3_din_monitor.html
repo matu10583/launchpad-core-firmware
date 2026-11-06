@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'">
+<title>Pro Mk3 DIN In → USB MIDI確認</title>
+<style>
+  :root { font: 16px system-ui,sans-serif; color-scheme: light dark }
+  body { max-width: 760px; margin: 2em auto; padding: 0 1em; line-height: 1.6 }
+  button,select { padding: .5em }
+  select { display: block; margin: 1em 0; width: min(100%,600px) }
+  pre { border: 1px solid #888; padding: 1em; white-space: pre-wrap; max-height: 30em; overflow: auto }
+</style>
+<h1>Pro Mk3 · DIN In → USB MIDI確認</h1>
+<p>DIN受信・USB転送に対応した新しいPro Mk3 FW用。サステイン送信機器のMIDI Out → Pro Mk3 MIDI In、Pro Mk3 → PCへUSBだけを接続してください。このページは<strong>MIDIを送信せず、FWも書き込みません</strong>。DAWではなく演奏用USB MIDI入力を選びます。</p>
+<button id="connect">USB MIDI入力を選択</button>
+<select id="input"><option value="">選択してください</option></select>
+<button id="copy" disabled>結果をコピー</button>
+<p id="status" role="status">未接続</p><pre id="log"></pre>
+<script>
+// BEGIN PURE PROTOCOL
+function cc64(bytes) {
+  if (bytes.length !== 3 || (bytes[0] & 0xf0) !== 0xb0 || bytes[1] !== 64 || bytes[2] > 127) return null;
+  return {channel: (bytes[0] & 15) + 1, value: bytes[2], pressed: bytes[2] >= 64};
+}
+// END PURE PROTOCOL
+const el = id => document.getElementById(id);
+const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+let access, previous;
+function receive(event) {
+  const data = Array.from(event.data);
+  const sustain = cc64(data);
+  const label = sustain ? `CC64 ch${sustain.channel} ${sustain.pressed ? 'ON' : 'OFF'} (${sustain.value})` : 'other MIDI';
+  el('log').textContent += `${label}: ${hex(data)}\n`;
+  el('copy').disabled = false;
+}
+el('connect').onclick = async () => {
+  try {
+    if (!navigator.requestMIDIAccess || !window.isSecureContext) throw Error('Chrome/Edgeの安全なコンテキストで開いてください');
+    access = await navigator.requestMIDIAccess();
+    const select = el('input');
+    select.replaceChildren(new Option('選択してください',''));
+    for (const port of access.inputs.values()) select.add(new Option(port.name,port.id));
+    el('status').textContent = 'Pro Mk3の演奏用USB MIDI入力を選択してください';
+  } catch (error) { el('status').textContent = `接続不可: ${error.message}`; }
+};
+el('input').onchange = async () => {
+  if (previous) previous.removeEventListener('midimessage',receive);
+  previous = undefined;
+  const port = access?.inputs.get(el('input').value);
+  if (!port) return;
+  if (/DAW/i.test(port.name || '')) { el('status').textContent = 'DAWではなくMIDI入力を選択してください'; return; }
+  try {
+    await port.open();
+    previous = port;
+    el('log').textContent = '';
+    port.addEventListener('midimessage',receive);
+    el('status').textContent = `${port.name} の受信中。サステインを踏む・離す操作をしてください`;
+  } catch (error) { el('status').textContent = `入力不可: ${error.message}`; }
+};
+el('copy').onclick = async () => {
+  try { await navigator.clipboard.writeText(el('log').textContent); el('status').textContent = 'コピーしました'; }
+  catch (error) { el('status').textContent = '結果欄を選択してコピーしてください'; }
+};
+</script>
+</html>

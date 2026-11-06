@@ -6,6 +6,8 @@
 use crate::sys::driver::common::storage::ExtFlash;
 
 mod input_filter;
+mod din_parser;
+mod din_rx;
 #[cfg(feature = "pro-din-probe")]
 pub mod din_probe;
 pub mod led;
@@ -127,6 +129,8 @@ async fn main(_spawner: Spawner) {
 
     usb::init_event_queues();
     usb::init();
+    din_rx::init();
+    let mut din_parser = din_parser::Parser::new();
 
     let app_host = AppHost::new(AppId::Boot);
     let app_host = APP_HOST.init(embassy_sync::mutex::Mutex::new(app_host));
@@ -146,6 +150,8 @@ async fn main(_spawner: Spawner) {
                 app_host_guard.route_midi_event(event);
             }
         }
+
+        din_rx::poll(&mut din_parser);
 
         runtime_driver.leds_task();
 
