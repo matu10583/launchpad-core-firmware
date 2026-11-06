@@ -11,18 +11,37 @@ use crate::sys::rotation;
 use crate::sys::settings;
 use crate::utils::layout;
 
-pub struct PerformanceApp;
+pub struct PerformanceApp {
+    #[cfg(feature = "launchpad-pro-mk3")]
+    held: [bool; 128],
+}
 
 impl PerformanceApp {
     pub const fn new() -> Self {
-        Self
+        Self {
+            #[cfg(feature = "launchpad-pro-mk3")]
+            held: [false; 128],
+        }
     }
 }
 
 impl App for PerformanceApp {
-    fn on_enter(&mut self) {}
+    fn on_enter(&mut self) {
+        #[cfg(feature = "launchpad-pro-mk3")]
+        for index in [93, 94, 96] {
+            led::set_raw(index, 0x484848);
+        }
+    }
 
-    fn on_exit(&mut self) {}
+    fn on_exit(&mut self) {
+        #[cfg(feature = "launchpad-pro-mk3")]
+        for (note, held) in self.held.iter_mut().enumerate() {
+            if *held {
+                driver::send_midi(MidiPort::Midi, &[0x90, note as u8, 0]);
+                *held = false;
+            }
+        }
+    }
 
     fn on_surface(&mut self, event: SurfaceEvent) {
         #[cfg(feature = "launchpad-pro-mk3")]
@@ -40,10 +59,13 @@ impl App for PerformanceApp {
             return;
         }
 
+        #[cfg(feature = "launchpad-pro-mk3")]
+        { self.held[note as usize] = event.pressed; }
+
         let velocity = settings::with(|settings| {
             if event.pressed {
                 if settings.velocity_enabled != 0 {
-                    apply_velocity_curve(settings.velocity_curve, event.value)
+                    apply_velocity_settings(settings, event.value).max(1)
                 } else {
                     127
                 }
@@ -53,6 +75,9 @@ impl App for PerformanceApp {
         });
 
         driver::send_midi(MidiPort::Midi, &[0x90, note, velocity]);
+        // Local feedback: show the pad while the firmware considers it pressed.
+        // This does not depend on a host echoing the MIDI message back to us.
+        led::set(index, if event.pressed { 0x00ff00 } else { 0 });
     }
 
     fn on_midi(&mut self, event: MidiEvent) {
@@ -158,6 +183,13 @@ pub(crate) fn apply_velocity_curve(curve: u8, value: u8) -> u8 {
         2 => velocity_curve_high(value),
         _ => value.min(127),
     }
+}
+
+pub(crate) fn apply_velocity_settings(settings: &settings::Settings, value: u8) -> u8 {
+    crate::app::velocity::tune(
+        apply_velocity_curve(settings.velocity_curve, value),
+        settings.velocity_gain, settings.velocity_soft,
+    )
 }
 
 fn velocity_curve_low(value: u8) -> u8 {

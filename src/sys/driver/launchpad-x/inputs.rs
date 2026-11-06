@@ -30,13 +30,17 @@ const LP_GRID_QUEUE_LEN: usize = 64;
 /// Minimum pressure required to trigger a Note On.
 ///
 /// Resting fingers or light touches below this value are ignored.
-const LP_PRESS_START_NORM: u16 = 300;
+const LP_PRESS_START_NORM: u16 = 112;
+
+/// The output curve starts at the press trigger, not the old 300 baseline.
+/// This does not change the press/release decisions.
+const LP_VELOCITY_START_NORM: u16 = 112;
 
 /// Pressure threshold to trigger a Note Off.
 ///
 /// Using a lower release threshold than start threshold creates hysteresis,
 /// preventing rapid note flickering when a pad is lightly held.
-const LP_PRESS_RELEASE_NORM: u16 = 144;
+const LP_PRESS_RELEASE_NORM: u16 = 8;
 
 /// Debounce sample counter required before confirming a press.
 const LP_PRESS_ON_COUNT: u8 = 1;
@@ -78,7 +82,9 @@ const LP_BASELINE_GUARD: u16 = 96;
 // Coefficients used to map raw 12-bit ADC readings (0..4095) into 7-bit MIDI velocity (1..127)
 // using a logarithmic/curved response matching human finger dynamics.
 const LP_AFTER_FLOOR_16: u32 = 0x2222;
-const LP_VELOCITY_GAIN_NUM: u32 = 140;
+
+#[path = "../../../app/note/velocity.rs"]
+mod velocity;
 
 const PAD_SCAN_MAP: [u8; LP_LED_COUNT] = [
     0xff, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0xff, 0xff, 0x00, 0x08, 0x10, 0x18, 0x01,
@@ -559,12 +565,7 @@ fn usat7(val: u32) -> u8 {
 
 #[inline(always)]
 fn norm_to_velocity(norm: u16) -> u8 {
-    if norm <= LP_PRESS_START_NORM {
-        return 1;
-    }
-
-    let value = (((norm - LP_PRESS_START_NORM) as u32) * LP_VELOCITY_GAIN_NUM) / 0x0ed4;
-    usat7(value).max(1)
+    velocity::map(norm, LP_VELOCITY_START_NORM)
 }
 
 #[inline(always)]

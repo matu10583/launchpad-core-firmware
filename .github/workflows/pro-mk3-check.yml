@@ -1,0 +1,46 @@
+name: Pro MK3 experimental firmware build
+
+on:
+  push:
+    branches: [launchpad-pro-mk3-stock-custom-transpose]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pro-mk3-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94.1'
+          targets: thumbv7em-none-eabihf
+          components: rust-src,llvm-tools
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile Pro MK3 only
+        run: cargo check --locked --bin core --target thumbv7em-none-eabihf --no-default-features --features launchpad-pro-mk3
+      - name: Package Pro MK3 only
+        run: cargo run --locked -p xtask -- package lppmk3 --release
+      - name: Verify package and record hash
+        run: |
+          test -s build/core-launchpad-pro-mk3.syx
+          test -s build/core-launchpad-pro-mk3.manifest.json
+          cd build
+          sha256sum core-launchpad-pro-mk3.syx core-launchpad-pro-mk3.manifest.json > SHA256SUMS.txt
+          printf '%s\n' 'Launchpad Pro MK3 USB-only experimental build. DIN MIDI and stock compatibility are NOT implemented. Not hardware-tested. Do not flash without recovery plan.' > READ-ME-FIRST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pro-mk3-experimental-UNVERIFIED
+          path: |
+            build/core-launchpad-pro-mk3.syx
+            build/core-launchpad-pro-mk3.manifest.json
+            build/SHA256SUMS.txt
+            build/READ-ME-FIRST.txt
+          if-no-files-found: error

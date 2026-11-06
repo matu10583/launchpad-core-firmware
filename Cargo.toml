@@ -190,6 +190,12 @@ codegen-units = 1
 debug = 0
 panic = "abort"
 
+# Keep the application inside the Launchpad X's 512 KiB flash after adding
+# Custom-mode guide support; leave peripheral dependencies at their existing
+# performance optimization level.
+[profile.release.package.core]
+opt-level = "z"
+
 [profile.dev]
 opt-level = "z"
 lto = "fat"

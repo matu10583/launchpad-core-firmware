@@ -1,0 +1,520 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//! Source-defined Launchpad X Custom 1–4 layouts.
+use crate::app::{AftertouchEvent, App, MidiEvent, SurfaceEvent};
+use crate::app::note::transpose::Transpose;
+use crate::app::guide::{self, Command as GuideCommand, Guide};
+use crate::driver;
+use crate::sys::{led, midi::MidiPort, settings};
+
+const DRUM: [[u8; 8]; 8] = [
+    [36, 37, 38, 39, 68, 69, 70, 71],
+    [40, 41, 42, 43, 72, 73, 74, 75],
+    [44, 45, 46, 47, 76, 77, 78, 79],
+    [48, 49, 50, 51, 80, 81, 82, 83],
+    [52, 53, 54, 55, 84, 85, 86, 87],
+    [56, 57, 58, 59, 88, 89, 90, 91],
+    [60, 61, 62, 63, 92, 93, 94, 95],
+    [64, 65, 66, 67, 96, 97, 98, 99],
+];
+const KEYS: [[u8; 8]; 8] = [
+    [36, 38, 40, 41, 43, 45, 47, 36],
+    [0, 37, 39, 0, 42, 44, 46, 0],
+    [48, 50, 52, 53, 55, 57, 59, 60],
+    [0, 49, 51, 0, 54, 56, 58, 0],
+    [60, 62, 64, 65, 67, 69, 71, 72],
+    [0, 61, 63, 0, 66, 68, 70, 0],
+    [72, 74, 76, 77, 79, 81, 83, 84],
+    [0, 73, 75, 0, 78, 80, 82, 0],
+];
+
+pub struct CustomApp {
+    slot: u8,
+    held: [bool; 64],
+    feedback: [u8; 128],
+    guide: Guide,
+    transpose: Transpose,
+    up_held: bool,
+    down_held: bool,
+    left_held: bool,
+    right_held: bool,
+}
+
+impl CustomApp {
+    pub const fn new() -> Self {
+        Self { slot: 0, held: [false; 64], feedback: [0; 128], guide: Guide::new(),
+            transpose: Transpose::new(), up_held: false, down_held: false,
+            left_held: false, right_held: false }
+    }
+
+    pub fn select_default(&mut self) {
+        self.release_all();
+        self.slot = 0;
+        self.feedback = [0; 128];
+        self.transpose = Transpose::new();
+        self.draw();
+    }
+
+    /// Custom uses the same guide lease as Note, mapped to the selected slot.
+    pub fn receive_guide_sysex(&mut self, data: &[u8]) -> bool {
+        let Some(command) = guide::decode(data, guide::MODEL_X) else { return false };
+        match command {
+            GuideCommand::Query => self.guide_reply(&[0x41, 0x03, 2, self.guide.active() as u8]),
+            GuideCommand::Layout => {
+                let payload = guide::x_layout(2 + self.slot,
+                    if self.slot == 0 { self.transpose.total() } else { 0 },
+                    |index| self.pitch(index));
+                self.guide_reply(&payload);
+            }
+            GuideCommand::Begin => {
+                self.guide.begin();
+                self.refresh_grid();
+                self.guide_reply(&[0x50, 0x10, 1]);
+            }
+            GuideCommand::Keepalive => {
+                if self.guide.active() {
+                    self.guide.renew();
+                    self.guide_reply(&[0x50, 0x11, 1]);
+                }
+            }
+            GuideCommand::End => {
+                self.guide.end();
+                self.refresh_grid();
+                self.guide_reply(&[0x50, 0x12, 0]);
+            }
+            GuideCommand::Set { layer, side, pitch, color } => {
+                if self.guide.set(layer, side, pitch, color) { self.refresh_pitch(pitch); }
+            }
+        }
+        true
+    }
+
+    fn guide_reply(&self, payload: &[u8]) {
+        let mut response = [0u8; 96];
+        if let Some(len) = guide::reply(&payload, guide::MODEL_X, &mut response) {
+            driver::send_midi(MidiPort::Midi, &response[..len]);
+        }
+    }
+
+    fn pitch(&self, index: u8) -> Option<u8> {
+        let row = index / 10;
+        let col = index % 10;
+        if !(1..=8).contains(&row) || !(1..=8).contains(&col) { return None; }
+        let pitch = match self.slot {
+            // The original split four-column chromatic keyboard: the right
+            // bottom row repeats the left row two octaves higher.
+            0 => {
+                let pitch = 48 + (row as i16 - 1) * 4
+                    + (col as i16 - 1) % 4
+                    + (col as i16 - 1) / 4 * 24
+                    + self.transpose.total();
+                return (0..=127).contains(&pitch).then_some(pitch as u8);
+            }
+            2 => DRUM[(row - 1) as usize][(col - 1) as usize],
+            1 => KEYS[(row - 1) as usize][(col - 1) as usize],
+            _ => index,
+        };
+        (pitch != 0).then_some(pitch)
+    }
+
+    fn held_pitch(&self, pitch: u8) -> bool {
+        (1..=8).any(|row| (1..=8).any(|col| {
+            let pos = ((row - 1) * 8 + col - 1) as usize;
+            self.held[pos] && self.pitch(row * 10 + col) == Some(pitch)
+        }))
+    }
+
+    fn release_all(&mut self) {
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                let pos = ((row - 1) * 8 + col - 1) as usize;
+                if self.held[pos] {
+                    self.held[pos] = false;
+                    if let Some(pitch) = self.pitch(index) {
+                        if !self.held_pitch(pitch) {
+                            driver::send_midi(MidiPort::Midi, &[0x90, pitch, 0]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_pad(&self, index: u8) {
+        let Some(pitch) = self.pitch(index) else { return };
+        let row = index / 10;
+        let col = index % 10;
+        let held = self.held[((row - 1) * 8 + col - 1) as usize];
+        if let Some(color) = self.guide.pad_color(index, Some(pitch), held,
+            |side, note| guide::side_has_pitch(side, note, |pad| self.pitch(pad))) {
+            led::novation(index, color);
+            return;
+        }
+        if self.slot >= 2 {
+            led::novation(index, self.feedback[pitch as usize]);
+        } else {
+            let color = if self.held_pitch(pitch) { 0xffffff }
+                else if self.slot == 0 {
+                    let degree = (pitch as i16 - self.transpose.total()).rem_euclid(12);
+                    if degree == 0 { 0xff47ce }
+                    else if matches!(degree, 2 | 4 | 5 | 7 | 9 | 11) {
+                        if index % 10 <= 4 { 0x239fd1 } else { 0x12cfd0 }
+                    } else { 0 }
+                }
+                else if pitch % 12 == 0 { 0xff47ce } else { 0x239fd1 };
+            led::set(index, color);
+        }
+    }
+
+    fn refresh_pitch(&self, pitch: u8) {
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                if self.pitch(index) == Some(pitch) { self.draw_pad(index); }
+            }
+        }
+    }
+
+    fn refresh_grid(&self) {
+        for row in 1..=8 {
+            for col in 1..=8 { self.draw_pad(row * 10 + col); }
+        }
+    }
+
+    fn draw(&self) {
+        led::clear();
+        self.refresh_grid();
+        for (n, index) in [89, 79, 69, 59].into_iter().enumerate() {
+            led::set_raw(index, if self.slot as usize == n { 0x10ff10 } else { 0x16434c });
+        }
+        led::set_raw(96, 0x16434c);
+        led::set_raw(97, 0x10ff10);
+        led::set_raw(95, 0x401010);
+        if self.slot == 0 {
+            for index in [91, 92] { led::set_raw(index, 0x12cfd0); }
+            for index in [93, 94] { led::set_raw(index, 0xff47ce); }
+        }
+    }
+
+    fn transpose_button(&mut self, index: u8, pressed: bool) {
+        let held = match index {
+            91 => &mut self.up_held,
+            92 => &mut self.down_held,
+            93 => &mut self.left_held,
+            94 => &mut self.right_held,
+            _ => return,
+        };
+        let was_held = *held;
+        *held = pressed;
+        if !pressed || was_held || self.slot != 0 { return; }
+        let next = if (index == 91 || index == 92) && self.up_held && self.down_held {
+            Some(self.transpose.without_octaves())
+        } else if (index == 93 || index == 94) && self.left_held && self.right_held {
+            Some(self.transpose.without_semitones())
+        } else {
+            self.transpose.shifted(match index { 91 => 12, 92 => -12, 93 => -1, _ => 1 })
+        };
+        if let Some(next) = next {
+            self.release_all();
+            self.transpose = next;
+            self.draw();
+        }
+    }
+}
+
+impl App for CustomApp {
+    fn on_enter(&mut self) { self.slot = 0; self.transpose = Transpose::new(); self.feedback = [0; 128]; self.guide.end(); self.draw(); }
+    fn on_exit(&mut self) {
+        self.release_all(); self.feedback = [0; 128]; self.guide.end();
+        self.up_held = false; self.down_held = false;
+        self.left_held = false; self.right_held = false;
+    }
+    fn on_surface(&mut self, event: SurfaceEvent) {
+        let Some(pitch) = self.pitch(event.index) else { return };
+        let row = event.index / 10;
+        let col = event.index % 10;
+        let pos = ((row - 1) * 8 + col - 1) as usize;
+        if self.held[pos] == event.pressed { return; }
+        let already_sounding = self.held_pitch(pitch);
+        self.held[pos] = event.pressed;
+        let velocity = if event.pressed {
+            settings::with(|s| if s.velocity_enabled == 0 { 127 }
+                else { crate::app::performance::apply_velocity_settings(s, event.value).max(1) })
+        } else { 0 };
+        if (event.pressed && !already_sounding) || (!event.pressed && !self.held_pitch(pitch)) {
+            driver::send_midi(MidiPort::Midi, &[0x90, pitch, velocity]);
+        }
+        self.refresh_pitch(pitch);
+    }
+    fn on_surface_raw(&mut self, event: SurfaceEvent) {
+        if (91..=94).contains(&event.index) {
+            self.transpose_button(event.index, event.pressed);
+            return;
+        }
+        if !event.pressed { return; }
+        if let Some(slot) = [89, 79, 69, 59].iter().position(|&index| index == event.index) {
+            self.release_all();
+            self.slot = slot as u8;
+            self.feedback = [0; 128];
+            self.draw();
+        }
+    }
+    fn on_midi(&mut self, event: MidiEvent) {
+        if event.port != MidiPort::Midi || self.slot < 2 { return; }
+        if (event.status & 0xf0) == 0x90 || (event.status & 0xf0) == 0x80 {
+            let pitch = event.data1 as usize;
+            if pitch >= 128 { return; }
+            let color = if (event.status & 0xf0) == 0x80 { 0 } else { event.data2 };
+            if self.feedback[pitch] != color {
+                self.feedback[pitch] = color;
+                self.refresh_pitch(event.data1);
+            }
+        }
+    }
+    fn on_aftertouch(&mut self, event: AftertouchEvent) {
+        let row = event.index / 10;
+        let col = event.index % 10;
+        if !(1..=8).contains(&row) || !(1..=8).contains(&col) { return; }
+        let pos = ((row - 1) * 8 + col - 1) as usize;
+        if !self.held[pos] { return; }
+        let Some(pitch) = self.pitch(event.index) else { return };
+        match settings::with(|s| s.aftertouch_mode) {
+            1 => driver::send_midi(MidiPort::Midi, &[0xa0, pitch, event.value]),
+            2 => driver::send_midi(MidiPort::Midi, &[0xd0, event.value]),
+            _ => {}
+        }
+    }
+    fn on_tick(&mut self) {
+        if self.guide.tick() { self.refresh_grid(); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sys::led::{self, Update};
+
+    fn request(command: &[u8]) -> Vec<u8> {
+        let mut frame = [0; 96];
+        let len = guide::reply(command, guide::MODEL_X, &mut frame).unwrap();
+        frame[..len].to_vec()
+    }
+
+    fn response() -> Vec<u8> {
+        let sent = crate::driver::take_midi();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, MidiPort::Midi);
+        sent[0].1.clone()
+    }
+
+    fn event(index: u8, pressed: bool) -> SurfaceEvent {
+        SurfaceEvent { index, pressed, value: 70 }
+    }
+
+    #[test]
+    fn factory_slots_route_pitches_and_release_on_switch() {
+        let mut app = CustomApp::new();
+        app.on_enter();
+        assert_eq!(app.pitch(11), Some(48));
+        assert_eq!(app.pitch(14), Some(51));
+        assert_eq!(app.pitch(15), Some(72));
+        assert_eq!(app.pitch(18), Some(75));
+        assert_eq!(app.pitch(21), Some(52));
+        assert_eq!(app.pitch(81), Some(76));
+        assert_eq!(app.pitch(88), Some(103));
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let pad = row * 10 + col;
+                assert_eq!(app.pitch(pad),
+                    crate::app::note::layout::note_for(
+                        crate::app::note::layout::Preset::Chromatic, pad, 0));
+            }
+        }
+        for col in 0..4 {
+            assert_eq!(app.pitch(15 + col), app.pitch(71 + col));
+            assert_eq!(app.pitch(25 + col), app.pitch(81 + col));
+        }
+        app.on_surface(event(11, true));
+        app.on_surface_raw(event(79, true));
+        assert_eq!(app.slot, 1);
+        assert_eq!(app.pitch(11), Some(36));
+        assert_eq!(app.pitch(21), None);
+        app.on_surface_raw(event(69, true));
+        assert_eq!(app.pitch(11), Some(36));
+        assert_eq!(app.pitch(14), Some(39));
+        assert_eq!(app.pitch(15), Some(68));
+        assert_eq!(app.pitch(88), Some(99));
+        app.on_surface_raw(event(59, true));
+        assert_eq!(app.pitch(11), Some(11));
+        assert_eq!(app.pitch(88), Some(88));
+        app.select_default();
+        assert_eq!(app.slot, 0);
+        let notes = crate::driver::take_midi();
+        assert_eq!(notes[0].1, [0x90, 48, 127]);
+        assert_eq!(notes[1].1, [0x90, 48, 0]);
+    }
+
+    #[test]
+    fn overlapping_pads_and_transposition_keep_notes_balanced() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        app.on_surface(event(15, true));
+        app.on_surface(event(71, true));
+        app.on_surface(event(15, false));
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 72, 127])]);
+        app.on_surface_raw(event(94, true));
+        assert_eq!(app.pitch(11), Some(49));
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 72, 0])]);
+        app.on_surface_raw(event(94, false));
+        app.on_surface_raw(event(93, true));
+        app.on_surface_raw(event(94, true)); // opposite arrows reset semitone shift
+        assert_eq!(app.pitch(11), Some(48));
+        app.on_surface_raw(event(93, false));
+        app.on_surface_raw(event(94, false));
+        app.on_surface(event(11, true));
+        app.on_exit();
+        assert_eq!(crate::driver::take_midi(), vec![
+            (MidiPort::Midi, vec![0x90, 48, 127]),
+            (MidiPort::Midi, vec![0x90, 48, 0]),
+        ]);
+    }
+
+    #[test]
+    fn chromatic_black_keys_are_dark_and_pressed_pitch_only_is_redrawn() {
+        let mut app = CustomApp::new();
+        app.on_enter();
+        let initial = led::take_updates();
+        assert!(initial.contains(&Update::Set(12, 0))); // C sharp
+        assert!(initial.contains(&Update::Set(16, 0))); // right-hand C sharp
+        assert!(initial.contains(&Update::Set(11, 0xff47ce)));
+        assert!(initial.contains(&Update::Set(15, 0xff47ce)));
+
+        app.on_surface(event(12, true));
+        assert_eq!(led::take_updates(), [Update::Set(12, 0xffffff)]);
+        app.on_surface(event(12, false));
+        assert_eq!(led::take_updates(), [Update::Set(12, 0)]);
+
+        app.on_surface(event(15, true));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xffffff), Update::Set(71, 0xffffff)]);
+        app.on_surface(event(15, false));
+        assert_eq!(led::take_updates(), [Update::Set(15, 0xff47ce), Update::Set(71, 0xff47ce)]);
+        crate::driver::take_midi();
+    }
+
+    #[test]
+    fn external_feedback_redraws_only_pads_with_matching_pitch() {
+        let mut app = CustomApp::new();
+        app.on_enter();
+        app.on_surface_raw(event(69, true)); // Custom 3, MIDI feedback
+        led::take_updates();
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x90, data1: 36, data2: 9 });
+        assert_eq!(led::take_updates(), [Update::Novation(11, 9)]);
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x90, data1: 36, data2: 9 });
+        assert!(led::take_updates().is_empty());
+        app.on_midi(MidiEvent { port: MidiPort::Midi, status: 0x80, data1: 36, data2: 0 });
+        assert_eq!(led::take_updates(), [Update::Novation(11, 0)]);
+    }
+
+    #[test]
+    fn query_and_layout_follow_all_four_custom_slots_and_transpose() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[1])));
+        assert_eq!(response(), request(&[0x41, 0x03, 2, 0]));
+        for (slot, button, first, fifth, invalid) in [
+            (0, 89, 48, 72, None),
+            (1, 79, 36, 43, Some(21)),
+            (2, 69, 36, 68, None),
+            (3, 59, 11, 15, None),
+        ] {
+            app.on_surface_raw(event(button, true));
+            led::take_updates();
+            assert!(app.receive_guide_sysex(&request(&[2])));
+            let frame = response();
+            assert_eq!(frame.len(), 85);
+            assert_eq!(frame[7], 0x42);
+            assert_eq!(frame[8], slot + 2);
+            assert_eq!(frame[9], 64);
+            assert_eq!(frame[20], first); // pitch for pad 11
+            assert_eq!(frame[24], fifth); // pitch for pad 15
+            if let Some(pad) = invalid {
+                let position = (pad / 10 - 1) as usize * 8 + (pad % 10 - 1) as usize;
+                assert_eq!(frame[10 + position / 7] & (1 << (position % 7)), 0);
+                assert_eq!(frame[20 + position], 0);
+            }
+            assert!(led::take_updates().is_empty());
+        }
+        app.on_surface_raw(event(89, true));
+        app.on_surface_raw(event(94, true));
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[2])));
+        let frame = response();
+        assert_eq!(frame[8], 2);
+        assert_eq!(frame[9], 65);
+        assert_eq!(frame[20], 49);
+        assert_eq!(frame[24], 73);
+        assert!(led::take_updates().is_empty());
+    }
+
+    #[test]
+    fn private_guide_follows_side_layers_held_transpose_and_lease() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        assert_eq!(response(), request(&[0x50, 0x10, 1]));
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 1, 48, 13])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 13)]); // right hand falls back to left
+        app.on_surface(event(11, true));
+        assert_eq!(led::take_updates(), [Update::Set(11, 0xffffff)]); // held hides preview
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 48, 127])]);
+        assert!(app.receive_guide_sysex(&request(&[0x20, 1, 0, 48, 21])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 21)]); // current wins
+        app.on_surface(event(11, false));
+        led::take_updates();
+        assert_eq!(crate::driver::take_midi(), vec![(MidiPort::Midi, vec![0x90, 48, 0])]);
+        app.on_surface_raw(event(94, true)); // transpose by one, pitch 48 moves off the grid
+        assert_eq!(app.pitch(11), Some(49));
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x11])));
+        assert_eq!(response(), request(&[0x50, 0x11, 1]));
+        assert!(app.receive_guide_sysex(&request(&[1])));
+        assert_eq!(response(), request(&[0x41, 0x03, 2, 1]));
+        assert!(app.receive_guide_sysex(&request(&[0x12])));
+        assert_eq!(response(), request(&[0x50, 0x12, 0]));
+        assert!(!app.guide.active());
+        led::take_updates();
+        app.on_surface_raw(event(94, false));
+        app.on_surface_raw(event(69, true)); // slot changes keep the lease but remap pitches
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x10])));
+        response();
+        led::take_updates();
+        assert!(app.receive_guide_sysex(&request(&[0x20, 0, 0, 36, 13])));
+        assert_eq!(led::take_updates(), [Update::Novation(11, 13)]);
+        for _ in 0..guide::LEASE_TICKS { app.on_tick(); }
+        assert!(!app.guide.active());
+        assert!(led::take_updates().contains(&Update::Novation(11, 0)));
+        app.on_exit();
+        assert!(!app.guide.active());
+    }
+
+    #[test]
+    fn malformed_or_other_model_commands_are_ignored() {
+        crate::driver::take_midi();
+        let mut app = CustomApp::new();
+        app.on_enter();
+        led::take_updates();
+        let mut wrong_model = request(&[1]);
+        wrong_model[5] = guide::MODEL_PRO_MK3;
+        assert!(!app.receive_guide_sysex(&wrong_model));
+        assert!(!app.receive_guide_sysex(&request(&[0x20, 2, 0, 48, 13])));
+        assert!(crate::driver::take_midi().is_empty());
+        assert!(led::take_updates().is_empty());
+    }
+}

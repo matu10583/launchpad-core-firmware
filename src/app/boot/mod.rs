@@ -67,7 +67,7 @@ impl App for BootApp {
 
     fn on_tick(&mut self) {
         if self.data.len() < 4 {
-            self.requested_switch = Some(AppId::Performance);
+            self.requested_switch = Some(default_app());
             return;
         }
 
@@ -128,7 +128,7 @@ impl App for BootApp {
         }
 
         if self.tick >= end_tick {
-            self.requested_switch = Some(AppId::Performance);
+            self.requested_switch = Some(default_app());
             return;
         }
 
@@ -137,5 +137,16 @@ impl App for BootApp {
 
     fn take_requested_app_switch(&mut self) -> Option<AppId> {
         self.requested_switch.take()
+    }
+}
+
+fn default_app() -> AppId {
+    #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+    {
+        AppId::Note
+    }
+    #[cfg(not(any(feature = "launchpad-x", feature = "launchpad-pro-mk3")))]
+    {
+        AppId::Performance
     }
 }

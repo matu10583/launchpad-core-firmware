@@ -33,6 +33,8 @@ Alternatively, download the `.syx` file from the [releases page](../../releases)
 - FastLED Apollo Support
 - Performance Mode
   - Bottom row mirroring on the Launchpad Pro Mk3
+- Note Mode: fixed layouts and pitch-based MIDI LED feedback on Launchpad X;
+  experimental scale Note and fixed Custom Note modes on Launchpad Pro Mk3
 - Programmer Mode
 - Custom boot animation
 
@@ -53,7 +55,7 @@ Novation Launchpad support:
 ## Roadmap
 
 - Complete native Live instrument modes
-- Note Mode
+- Complete Note Mode feature parity across devices
 - Chord Mode
 - Custom Modes via Novation Components on all Launchpads
 - Sequencer Mode
@@ -62,6 +64,16 @@ Novation Launchpad support:
 ... and more to come!
 
 ## Build
+
+Launchpad X and Launchpad Pro Mk3 share this source branch, but produce separate,
+device-specific firmware packages. `src/app/note/` is the X implementation;
+`src/app/pro_note/` and `src/app/custom_note/` are Pro Mk3 implementations.
+The X-specific preview/current MIDI LED channels are documented in
+[LAUNCHPAD-X-NOTE-MODE.md](LAUNCHPAD-X-NOTE-MODE.md) and are **not** yet a Pro Mk3
+protocol. Pro Mk3 stock-mode compatibility and hardware behaviour are not
+verified; see [PRO-MK3-STOCK-CUSTOM-TRANSPOSE.md](PRO-MK3-STOCK-CUSTOM-TRANSPOSE.md).
+The [dual-device CI workflow](.github/workflows/x-pro-mk3-check.yml) checks both
+packages on the fork's `code` branch without publishing a release.
 
 Build a firmware package using one of the cargo aliases:
 

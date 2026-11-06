@@ -2,9 +2,17 @@
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
 use crate::app::boot::BootApp;
+#[cfg(feature = "launchpad-pro-mk3")]
+use crate::app::custom_note::CustomNoteApp;
 use crate::app::daw::DawApp;
+#[cfg(feature = "launchpad-pro-mk3")]
+use crate::app::pro_note::NoteApp;
 use crate::app::palette_editor::PaletteEditorApp;
 use crate::app::performance::PerformanceApp;
+#[cfg(feature = "launchpad-x")]
+use crate::app::note::NoteApp;
+#[cfg(feature = "launchpad-x")]
+use crate::app::x_custom::CustomApp;
 use crate::app::programmer::ProgrammerApp;
 use crate::app::setup::SetupApp;
 use crate::app::{AftertouchEvent, App, AppId, MidiEvent, SurfaceEvent};
@@ -27,6 +35,12 @@ pub struct AppHost {
     boot: BootApp,
     setup: SetupApp,
     performance: PerformanceApp,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    custom_note: CustomNoteApp,
+    #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+    note: NoteApp,
+    #[cfg(feature = "launchpad-x")]
+    x_custom: CustomApp,
     programmer: ProgrammerApp,
     daw: DawApp,
     pending_host_switch: Option<AppId>,
@@ -35,10 +49,16 @@ pub struct AppHost {
     setup_hold_ticks: u16,
     #[cfg(feature = "no-setup-btn")]
     setup_hold_active: bool,
+    #[cfg(feature = "launchpad-x")]
+    note_hold_ticks: u16,
+    #[cfg(feature = "launchpad-x")]
+    note_hold_active: bool,
     #[cfg(not(feature = "no-setup-btn"))]
     setup_button_ticks: u16,
     #[cfg(not(feature = "no-setup-btn"))]
     setup_button_active: bool,
+    #[cfg(feature = "launchpad-pro-mk3")]
+    shift_held: bool,
 }
 
 impl AppHost {
@@ -48,6 +68,12 @@ impl AppHost {
             boot: BootApp::new(),
             setup: SetupApp::new(),
             performance: PerformanceApp::new(),
+            #[cfg(feature = "launchpad-pro-mk3")]
+            custom_note: CustomNoteApp::new(),
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            note: NoteApp::new(),
+            #[cfg(feature = "launchpad-x")]
+            x_custom: CustomApp::new(),
             programmer: ProgrammerApp::new(),
             daw: DawApp::new(),
             pending_host_switch: None,
@@ -57,10 +83,16 @@ impl AppHost {
             setup_hold_ticks: 0,
             #[cfg(feature = "no-setup-btn")]
             setup_hold_active: false,
+            #[cfg(feature = "launchpad-x")]
+            note_hold_ticks: 0,
+            #[cfg(feature = "launchpad-x")]
+            note_hold_active: false,
             #[cfg(not(feature = "no-setup-btn"))]
             setup_button_ticks: 0,
             #[cfg(not(feature = "no-setup-btn"))]
             setup_button_active: false,
+            #[cfg(feature = "launchpad-pro-mk3")]
+            shift_held: false,
         }
     }
 
@@ -69,6 +101,12 @@ impl AppHost {
             AppId::Boot => &mut self.boot,
             AppId::Setup => &mut self.setup,
             AppId::Performance => &mut self.performance,
+            #[cfg(feature = "launchpad-pro-mk3")]
+            AppId::CustomNote => &mut self.custom_note,
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            AppId::Note => &mut self.note,
+            #[cfg(feature = "launchpad-x")]
+            AppId::XCustom => &mut self.x_custom,
             AppId::Programmer => &mut self.programmer,
             AppId::Daw => &mut self.daw,
             AppId::PaletteEditor => &mut self.palette_editor,
@@ -105,6 +143,58 @@ impl AppHost {
 
     #[inline(never)]
     pub fn route_surface_event(&mut self, event: SurfaceEvent) {
+        #[cfg(feature = "launchpad-x")]
+        if event.index == 96 && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer) {
+            if event.pressed {
+                if self.current != AppId::Note { self.switch(AppId::Note); }
+                self.note_hold_ticks = 0;
+                self.note_hold_active = true;
+            } else {
+                if self.note_hold_active && self.note_hold_ticks < SETUP_HOLD_TICKS
+                    && self.current == AppId::Note && self.note.settings_active() {
+                    self.note.close_settings();
+                }
+                self.note_hold_active = false;
+            }
+            return;
+        }
+
+        #[cfg(feature = "launchpad-x")]
+        if event.index == 97 && event.pressed
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            if self.current != AppId::XCustom { self.switch(AppId::XCustom); }
+            else { self.x_custom.select_default(); }
+            return;
+        }
+
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.index == 90 {
+            self.shift_held = event.pressed;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 94
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            if self.current != AppId::Note {
+                self.switch(AppId::Note);
+            }
+            self.note.show_settings(self.shift_held);
+            return;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 96
+            && !matches!(self.current, AppId::Boot | AppId::Setup | AppId::PaletteEditor | AppId::Programmer)
+        {
+            self.switch(AppId::CustomNote);
+            self.custom_note.show_channel_settings(self.shift_held);
+            return;
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if event.pressed && event.index == 93 && matches!(self.current, AppId::CustomNote | AppId::Note) {
+            self.switch(AppId::Daw);
+            return;
+        }
         if event.index != 0 {
             let mut canonical_event = event;
             canonical_event.index = self.to_canonical_index(event.index);
@@ -140,6 +230,12 @@ impl AppHost {
     #[inline(never)]
     pub fn route_midi_event(&mut self, event: MidiEvent) {
         if event.port == MidiPort::Daw {
+            // Live may keep sending DAW traffic while the player is in Note mode.
+            // Only a deliberately selected DAW view should receive that traffic.
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
+                return;
+            }
             if self.current == AppId::Daw && Self::handle_led_tempo_event(&event) {
                 return;
             }
@@ -170,10 +266,34 @@ impl AppHost {
 
     #[inline(never)]
     pub fn receive_sysex(&mut self, port: MidiPort, data: &[u8]) {
+        #[cfg(feature = "launchpad-x")]
+        if port == MidiPort::Midi {
+            let consumed = match self.current {
+                AppId::Note => self.note.receive_guide_sysex(data),
+                AppId::XCustom => self.x_custom.receive_guide_sysex(data),
+                _ => false,
+            };
+            if consumed { return; }
+        }
+        #[cfg(feature = "launchpad-pro-mk3")]
+        if port == MidiPort::Midi {
+            let consumed = match self.current {
+                AppId::Note => self.note.receive_guide_sysex(data),
+                AppId::CustomNote => self.custom_note.receive_guide_sysex(data),
+                _ => false,
+            };
+            if consumed { return; }
+        }
         if port == MidiPort::Daw {
             if sysex::device_inquiry::execute(self.current, port, data)
                 || sysex::version_inquiry::execute(self.current, port, data)
             {
+                return;
+            }
+            // Do not let Live's automatic DAW enable/layout requests take over
+            // Note mode (or queue a switch during the boot animation/Setup).
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
                 return;
             }
             let (_, requested) = self.daw.receive_sysex_for_app(data, self.current);
@@ -184,6 +304,10 @@ impl AppHost {
         }
 
         if port == MidiPort::Midi && modes::is_selection(self.daw.model(), data) {
+            #[cfg(any(feature = "launchpad-x", feature = "launchpad-pro-mk3"))]
+            if self.current != AppId::Daw {
+                return;
+            }
             let (_, requested) = self.daw.receive_sysex_for_app(data, self.current);
             if let Some(app) = requested {
                 self.request_host_switch(app);
@@ -208,6 +332,14 @@ impl AppHost {
 
     #[inline(never)]
     pub fn route_tick_event(&mut self) {
+        #[cfg(feature = "launchpad-x")]
+        if self.note_hold_active && self.current == AppId::Note {
+            self.note_hold_ticks = self.note_hold_ticks.saturating_add(1);
+            if self.note_hold_ticks >= SETUP_HOLD_TICKS {
+                self.note_hold_active = false;
+                self.note.show_settings();
+            }
+        }
         #[cfg(feature = "no-setup-btn")]
         self.tick_setup_hold_button();
 

@@ -700,7 +700,7 @@ impl App for DawApp {
 
         let velocity = settings::with(|s| {
             if s.velocity_enabled != 0 {
-                crate::app::performance::apply_velocity_curve(s.velocity_curve, event.value)
+                crate::app::performance::apply_velocity_settings(s, event.value)
                     .clamp(1, 127)
             } else {
                 127

@@ -9,6 +9,75 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// This pure mapping module can be tested on the hosted CI runner without
+// compiling the ARM-specific firmware input driver for the host.
+#[cfg(test)]
+#[path = "../../src/app/note/layout.rs"]
+mod note_layout;
+
+#[cfg(test)]
+#[path = "../../src/app/note/velocity.rs"]
+mod note_velocity;
+
+#[cfg(test)]
+#[path = "../../src/app/note/transpose.rs"]
+mod note_transpose;
+
+// The private guide's envelope and session state are pure and host-testable.
+#[cfg(test)]
+#[path = "../../src/app/guide.rs"]
+pub mod note_guide;
+
+// Compile and run the actual Note-mode App tests with lightweight host drivers.
+// The firmware library disables its own test target on non-ARM hosts.
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod app;
+#[cfg(test)]
+#[allow(dead_code)]
+mod sys;
+#[cfg(test)]
+#[allow(dead_code)]
+mod driver;
+
+#[cfg(test)]
+mod private_guide_mapping_tests {
+    use super::{note_guide::{self, Guide}, note_layout::{note_for, Preset}};
+
+    fn mapped(guide: &Guide, preset: Preset, transpose: i16) -> Vec<(u8, u8)> {
+        let mut result = Vec::new();
+        for row in 1..=8 {
+            for col in 1..=8 {
+                let index = row * 10 + col;
+                if let Some(color) = guide.pad_color(index, note_for(preset, index, transpose), false,
+                    |side, pitch| note_guide::side_has_pitch(side, pitch,
+                        |pad| note_for(preset, pad, transpose))) {
+                    result.push((index, color));
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn pitched_guides_follow_layout_and_transpose_but_stay_in_one_half() {
+        let mut guide = Guide::new();
+        guide.begin();
+        guide.set(0, 0, 48, 13);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13)]);
+        assert_eq!(mapped(&guide, Preset::Chromatic, -4), vec![(21, 13)]);
+        assert_eq!(mapped(&guide, Preset::Classic, 0), vec![(41, 13)]);
+        guide.set(0, 1, 48, 21);
+        assert_eq!(mapped(&guide, Preset::Classic, 0), vec![(41, 13)]); // pitch 48 absent on right
+        guide.set(1, 1, 72, 21);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13), (15, 21)]);
+        guide.set(0, 2, 72, 9);
+        assert_eq!(mapped(&guide, Preset::Chromatic, 0), vec![(11, 13), (15, 21), (71, 9)]);
+        guide.end();
+        assert!(mapped(&guide, Preset::Chromatic, 0).is_empty());
+    }
+}
+
 fn find_objcopy() -> Result<PathBuf, Box<dyn Error>> {
     let check = if cfg!(windows) {
         Command::new("where").arg("arm-none-eabi-objcopy").output()
@@ -585,6 +654,10 @@ fn package(
     ];
     if release {
         cargo_args.push("--release");
+    }
+    // The outer cargo run does not propagate --locked to this child cargo build.
+    if env::var_os("CORE_FW_CARGO_LOCKED").is_some() {
+        cargo_args.push("--locked");
     }
     run("cargo", &cargo_args, repo)?;
 
