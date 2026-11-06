@@ -16,15 +16,13 @@ F0 7D 43 46 57 0E 01 70 01 28 [GPIOA pin0..15 (16 bytes)] ... [GPIOF pin0..15] F
 
 1. **Pro Mk3構成の新しいTeamCityビルド**が成功し、コミットSHAがこの診断変更を含むことを確認する。ZIP内のPro Mk3用`.syx`だけを使う。従来の正常に動くPro Mk3版と純正復旧手段を手元に残す。実機への書込みはユーザーのみが行う。公式のブートローダー手順は[NovationのSetupガイド](https://userguides.novationmusic.com/hc/en-gb/articles/25494545308306-Using-the-Launchpad-Pro-MK3-s-Setup-page#bootloader-menu)を参照。**USBの通常の演奏用MIDIポートへFWを書き込まない**。本体のSetupを押しながらUSB接続して、表示されたブートローダーポートを選ぶ。誤機種ファイルを使わない。
 2. Pro Mk3を通常起動し、PCのUSB MIDI入力/出力から**PRO MK3 (MIDI)**（DAWではない）に相当するポートを確認。外部USB→DINインターフェースの**DIN Out → Pro Mk3 DIN In**を接続。対応するTRS変換ケーブルを使い、DIN OutをProのDIN Outへ接続しない。DAW等の自動MIDIループバックを停止。音源は接続しなくてよい。
-3. PCで `python -m pip install mido python-rtmidi`、`python tools/pro_mk3_din_probe.py --list` を実行。表示されたポート名を**手で確認して**以下を実行する（`<...>`はその実名へ置換）。ツールはProへの診断SysExと、外部DINアダプタへのch1 CC64の127/0だけを送る。基準1回・CC64中3回の受信返信、GPIO別の差分を表示する。実機へのFW書込みや設定保存はしない。
-
-   ```sh
-   python tools/pro_mk3_din_probe.py --pro-in "<Pro USB MIDI input>" --pro-out "<Pro USB MIDI output>" --din-out "<外部DINインターフェースのoutput>"
-   ```
-
-4. 4件の `reply: F0 ... F7` と、表示された `GPIO...` 差分を共有する。無返信ならUSBポート・FWリビジョン・`CORE_GUIDE_SYSEX_ID`を確認。出力がすべて0でも非接続とは断定しない。検査後、通常演奏・LED・ボタン操作に異常がないか確認し、不要なら保存済みの通常FWへ戻す。電源再接続で直らない異常があれば診断を中止し、以前のFWへ復旧する。
+3. PCに追加ツールをインストールせず、[診断ページ `tools/pro_mk3_din_probe.html`](tools/pro_mk3_din_probe.html)をダウンロードしてChrome/Edgeで**ローカルファイルとして開く**。この単一HTMLは外部スクリプト・ネット接続・保存をしない。クリックしてWeb MIDIの**SysExアクセスを許可**し、Pro Mk3 USB **MIDI**入力・出力と、外部USB→DINインターフェースの出力をそれぞれ**ポート名を見て**選択。3つ目にPro Mk3の出力を選ばない。`CORE_GUIDE_SYSEX_ID`が通常の`7D`以外のビルドでは、ページのID欄を変更する。
+4. `無入力とCC64送信中を比較`を押す。ページは基準時に1回診断を行い、**外部DINアダプタ出力にch1 CC64=127/0を約10ms間隔で送信**しながら3回診断し、GPIOの差分を表示する。ブラウザを前面に保ち、途中で別のMIDIソフトから送らない。`結果をコピー`で4件の `reply: F0 ... F7` と `GPIO...` 差分を共有する。PCのブラウザはChrome/EdgeのWeb MIDI SysEx対応と安全なコンテキストが必要で、環境によっては`file://`から許可できない。その場合は、信頼できるローカルHTTPS配信/`localhost`で同じHTMLを開くか、下記のPython代替を使う。FWのZIPとHTMLは別々に配布し、**ページを開くだけではFWを書き換えない**。
+5. 無返信ならUSBポート・FWリビジョン・`CORE_GUIDE_SYSEX_ID`を確認。出力がすべて0でも非接続とは断定しない。検査後、通常演奏・LED・ボタン操作に異常がないか確認し、不要なら保存済みの通常FWへ戻す。電源再接続で直らない異常があれば診断を中止し、以前のFWへ復旧する。
 
 外部USB→DINアダプタがない場合は、外部鍵盤側からCC64を連打しながらMIDIモニターで手動SysEx要求を送れるが、40msの観測に偶然入らないことがある。**返信がゼロだけの結果では原因を確定しない。**
+
+Pythonを使える場合は従来の`tools/pro_mk3_din_probe.py`も残す。`python -m pip install mido python-rtmidi`、`python tools/pro_mk3_din_probe.py --list`でポートを確認後、`python tools/pro_mk3_din_probe.py --pro-in "<Pro USB MIDI input>" --pro-out "<Pro USB MIDI output>" --din-out "<外部DINインターフェースのoutput>"`を実行。ブラウザと同じプロトコル・結果を使う。どちらも実機でまだ未検証。
 
 ## ビルドと制約
 
