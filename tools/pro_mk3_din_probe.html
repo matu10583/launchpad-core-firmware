@@ -17,7 +17,7 @@
   .warning { border-left: 4px solid #bf6930; padding-left: 1em }
 </style>
 <h1>Launchpad Pro Mk3 · DIN In 診断</h1>
-<p class="warning">このページは<strong>DINを修理しません</strong>。Pro Mk3の診断機能を含むFWが必要です。GPIOの変化を見るだけなので、ゼロでもDINピンが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
+<p class="warning">このページは<strong>DINを修理しません</strong>。GPIO設定読み取り（コマンド31）を含む新しいPro Mk3診断FWが必要です。GPIOの変化とピン設定を見るだけなので、ゼロでもDINピンが無いとは断定できません。音源・DAWのMIDIループバックは切ってください。</p>
 <p>接続：<strong>手元のサステイン送信機器 → Pro Mk3 MIDI In、Pro Mk3 → PCへUSB</strong>。追加のDINアダプタは不要です。Chrome/EdgeのWeb MIDI SysEx許可が必要です。このHTMLから外部の機器へCC64は送りません。</p>
 <button id="connect">MIDI機器へのアクセスを許可</button>
 <fieldset>
@@ -42,6 +42,17 @@ function parseProbeResponse(bytes, manufacturerId) {
       bytes[bytes.length - 1] !== 0xf7) return null;
   const edges = Array.from(bytes.slice(prefix.length, -1));
   return edges.every(value => value <= 127) ? edges : null;
+}
+function parseConfigResponse(bytes, manufacturerId, port) {
+  const prefix = [0xf0, manufacturerId, ...FIXED, 0x71, port];
+  if (bytes.length !== prefix.length + 1 + 16 * 4 + 1 ||
+      !prefix.every((value, index) => bytes[index] === value) ||
+      bytes[bytes.length - 1] !== 0xf7) return null;
+  const clock = bytes[prefix.length];
+  if (clock > 1) return null;
+  const values = Array.from(bytes.slice(prefix.length + 1, -1));
+  if (values.some((v, i) => v > [3, 15, 3, 1][i % 4])) return null;
+  return {clock: !!clock, pins: Array.from({length: 16}, (_, i) => values.slice(i * 4, i * 4 + 4))};
 }
 function compareEdges(baseline, active) {
   if (baseline.length !== EDGE_COUNT || active.length !== EDGE_COUNT) throw new Error('GPIOデータが不正です');
@@ -74,7 +85,7 @@ get('#connect').onclick = async () => {
     report('機器を選択してください。MIDIポートが見えない場合は、接続後にアクセスを再実行してください。');
   } catch (error) { report(`MIDI接続不可: ${error.message}`); }
 };
-async function snapshot(input, output, manufacturerId) {
+async function requestReply(input, output, request, parse) {
   return new Promise((resolve, reject) => {
     let timer;
     const finish = (callback, value) => {
@@ -82,14 +93,23 @@ async function snapshot(input, output, manufacturerId) {
       callback(value);
     };
     const receive = event => {
-      const result = parseProbeResponse(event.data, manufacturerId);
-      if (result) finish(resolve, {edges: result, raw: hex(event.data)});
+      const result = parse(event.data);
+      if (result) finish(resolve, {result, raw: hex(event.data)});
     };
     input.addEventListener('midimessage', receive);
-    timer = setTimeout(() => finish(reject, new Error('2秒以内に診断応答なし。Pro Mk3のUSB MIDIポートとFWビルド、SysEx IDを確認してください。')), 2000);
-    try { output.send([0xf0, manufacturerId, ...FIXED, 0x30, 0xf7]); }
+    timer = setTimeout(() => finish(reject, new Error('2秒以内に診断応答なし。Pro Mk3のUSB MIDIポートと、このHTMLに対応するFWビルド、SysEx IDを確認してください。')), 2000);
+    try { output.send(request); }
     catch (error) { finish(reject, error); }
   });
+}
+async function snapshot(input, output, manufacturerId) {
+  const reply = await requestReply(input, output, [0xf0, manufacturerId, ...FIXED, 0x30, 0xf7],
+    bytes => parseProbeResponse(bytes, manufacturerId));
+  return {edges: reply.result, raw: reply.raw};
+}
+async function configSnapshot(input, output, manufacturerId, port) {
+  return requestReply(input, output, [0xf0, manufacturerId, ...FIXED, 0x31, port, 0xf7],
+    bytes => parseConfigResponse(bytes, manufacturerId, port));
 }
 function selectedPorts() {
   const input = access?.inputs.get(get('#pro-in').value);
@@ -122,6 +142,18 @@ get('#run').onclick = async () => {
       baselineFrames.push(frame.edges);
       append(`baseline ${i + 1}: ${frame.raw}`);
       await delay(120);
+    }
+    if (cancelled) { report('中断しました'); return; }
+    append('GPIO設定の読み取り（mode: 0=input 1=output 2=alternate 3=analog; M0 UARTの設定は変更しません）:');
+    for (let port = 0; port < 6 && !cancelled; port++) {
+      const frame = await configSnapshot(ports.input, ports.output, ports.manufacturerId, port);
+      const letter = String.fromCharCode(65 + port);
+      append(`config ${letter}: ${frame.raw}`);
+      if (!frame.result.clock) { append(`GPIO${letter}: clock off (pin settings unavailable)`); continue; }
+      for (let pin = 0; pin < 16; pin++) {
+        const [mode, af, pull, level] = frame.result.pins[pin];
+        if (mode !== 3) append(`GPIO${letter}${pin}: mode=${mode}, AF=${af}, pull=${pull}, level=${level}`);
+      }
     }
     if (cancelled) { report('中断しました'); return; }
     for (let remaining = 3; remaining > 0 && !cancelled; remaining--) {
