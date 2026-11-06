@@ -12,6 +12,7 @@ pub mod usb;
 use crate::sys::driver::common::storage::ExtFlash;
 
 use embassy_executor::Spawner;
+use embassy_stm32::interrupt::{self, InterruptExt, Priority};
 use embassy_stm32::rcc::*;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -53,6 +54,10 @@ async fn main(_spawner: Spawner) {
     config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
 
     let p = embassy_stm32::init(config);
+
+    // A full USB SysEx packet can keep the USB IRQ busy longer than an LED
+    // scan slot. Let the scan timer preempt USB so the pads do not flicker.
+    interrupt::OTG_FS.set_priority(Priority::P1);
 
     usb::init_event_queues();
     usb::init();
