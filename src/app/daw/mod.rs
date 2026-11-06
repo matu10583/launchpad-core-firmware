@@ -95,6 +95,9 @@ impl DawApp {
     fn reset(&mut self) {
         self.release_all();
         self.stop();
+        if self.visible {
+            led::clear();
+        }
         self.enabled = false;
         self.page = profile::standalone_page(self.model);
         self.layout = profile::standalone_layout(self.model);
@@ -152,6 +155,11 @@ impl DawApp {
         self.layout = layout;
         self.subpage = subpage;
         self.bank = bank;
+
+        // Clear the previous page once, not on every incoming LED update.
+        if self.visible {
+            led::clear();
+        }
 
         if self.model == Model::ProMk3 {
             self.reply(0, &[layout, subpage, 0]);
@@ -600,7 +608,6 @@ impl DawApp {
         if !self.visible {
             return;
         }
-        led::clear();
         for i in 0..128 {
             self.render_index(i);
         }
