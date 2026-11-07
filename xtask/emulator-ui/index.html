@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Core FW | Launchpad emulator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box }
+  :root { font: 15px system-ui,sans-serif; color-scheme: dark; background: #151c28; color: #e8edf5 }
+  body { width: 100%; max-width: 1050px; margin: 1.5rem auto; padding: 0 1rem }
+  header, .row { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap }
+  header { justify-content: space-between; border-bottom: 1px solid #455469; padding-bottom: .8rem }
+  h1 { font-size: 1.5rem; margin: .3rem 0 }
+  h2 { font-size: 1.1rem }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px); gap: 1.5rem; margin-top: 1rem }
+  main > section, fieldset { min-width: 0 }
+  #surface { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); width: 100%; gap: clamp(2px, .7vw, 5px); touch-action: none; user-select: none }
+  button, input, select { font: inherit; border-radius: 6px; border: 1px solid #697c94; color: inherit; background: #28364a; padding: .45rem }
+  button { cursor: pointer }
+  button:hover { border-color: #a7c5eb }
+  .pad { aspect-ratio: 1; min-width: 0; padding: 0; border: 2px solid #4b5e75; background: #202734; font-size: clamp(.48rem, 1.2vw, .72rem); font-weight: 600; color: #ddd; text-shadow: 0 1px 3px #000; overflow-wrap: anywhere; line-height: 1.1 }
+  .pad.grid { border-radius: 13% }
+  .pad.edge { border-radius: 50% }
+  .pad.empty { visibility: hidden }
+  .pad.down { outline: 2px solid #fff }
+  fieldset { margin-bottom: 1rem; border: 1px solid #495a70; border-radius: 8px }
+  legend { padding: 0 .4rem }
+  label { display: inline-flex; align-items: center; gap: .3rem; margin: .25rem }
+  input[type=number] { width: 5rem }
+  input[type=text] { width: min(100%, 300px); min-width: 0 }
+  pre { background: #0c1119; border-radius: 6px; padding: .7rem; overflow: auto; min-height: 4rem; max-height: 220px; white-space: pre-wrap; word-break: break-all }
+  .hint { color: #b8c6d8; line-height: 1.5 }
+  #error { color: #ff9f9f }
+  @media(max-width:800px) { main { grid-template-columns: minmax(0, 1fr) } }
+  @media(max-width:600px) {
+    body { margin: .5rem auto; padding: 0 .5rem }
+    header { gap: .2rem; padding-bottom: .3rem }
+    h1 { font-size: 1.1rem }
+    main { gap: .7rem; margin-top: .5rem }
+    #surface { max-width: min(100%, 58svh); margin: 0 auto; touch-action: pan-y }
+    .pad { border-width: 1px; font-size: clamp(.4rem, 1.5vw, .6rem) }
+    .row { gap: .35rem }
+    fieldset { padding: .5rem }
+    label { min-width: 0 }
+  }
+</style>
+<header><h1>Launchpad · FW App Emulator</h1><span id="status">接続中…</span></header>
+<details class="hint"><summary>使い方と再現範囲</summary><p>実FWのAppHostでパッド・MIDI・SysEx・tickを処理。XはSessionを押したまま500ms進めてSetupへ、Pro Mk3はSetupを押して入ります。Setupのモード選択後は同じボタンで退出します。USBパケット、圧力センサー、M0通信、設定の永続化は未再現。LEDパレット表示は近似です。</p></details>
+<main>
+  <section><div class="row"><label><input type="checkbox" id="show-numbers">パッド番号を表示</label></div><div id="surface" aria-label="Launchpad surface"></div><p class="hint">操作ボタンは名前で表示。番号はボタンにマウスを重ねても確認できます。実機配置の簡易図です。</p></section>
+  <section>
+    <fieldset><legend>モードと演奏</legend>
+      <div class="row"><button data-command="switch note">Note（直接切替）</button><button data-command="switch custom">Custom（直接切替）</button><button data-command="switch setup">Setup（直接切替）</button>
+      <label>velocity <input id="velocity" type="number" min="0" max="127" value="90"></label></div>
+    </fieldset>
+    <fieldset><legend>ガイド（演奏用ポート）</legend>
+      <div class="row"><button data-command="guide midi 01">QUERY</button><button data-command="guide midi 02">GET_LAYOUT</button><button data-command="guide midi 10">BEGIN</button><button data-command="guide midi 11">KEEPALIVE</button><button data-command="guide midi 12">END</button></div>
+      <p><label>layer <select id="layer"><option value="00">予告 0</option><option value="01">現在 1</option></select></label>
+      <label>pad <input id="target" type="number" min="11" max="88" value="15"></label>
+      <label>color <input id="color" type="number" min="0" max="127" value="13"></label></p>
+      <button id="setpad">SET_PAD 0x21</button><span class="hint">色 0 で解除</span>
+    </fieldset>
+    <fieldset><legend>MIDI / SysEx / 仮想時間</legend>
+      <div class="row"><label>port <select id="port"><option>midi</option><option>daw</option></select></label>
+      <label>hex <input id="hex" type="text" value="90 3C 64" spellcheck="false"></label></div>
+      <div class="row"><button id="sendmidi">MIDI 3 bytes</button><button id="sendsysex">Raw SysEx F0…F7</button></div>
+      <p><label>advance ms <input id="ms" type="number" min="0" max="10000" value="500"></label><button id="advance">時間を進める</button></p>
+    </fieldset>
+    <p id="error" role="alert"></p><h2>MIDI出力・更新履歴</h2><pre id="log" aria-live="polite"></pre>
+  </section>
+</main>
+<script>
+const surface = document.querySelector('#surface');
+const log = document.querySelector('#log');
+const status = document.querySelector('#status');
+const error = document.querySelector('#error');
+const showNumbers = document.querySelector('#show-numbers');
+const buttons = new Map();
+let busy = Promise.resolve();
+let held = null;
+let current = {device: 'x', mode: 'note'};
+// Physical labels, not a replacement for AppHost routing. Unmapped controls
+// keep their hardware names even if the firmware doesn't implement them.
+const labels = {
+  x: {91:'↑ Oct', 92:'↓ Oct', 93:'← Semi', 94:'→ Semi', 95:'Session', 96:'Note', 97:'Custom', 98:'Capture'},
+  'pro-mk3': {0:'Setup', 70:'Down', 80:'Up', 90:'Shift', 91:'Left', 92:'Right', 93:'Session', 94:'Note', 96:'Custom'}
+};
+function padLabel(index) {
+  if (current.mode === 'setup') {
+    const setup = {89:'Main', 79:'LEDs', 69:'Velocity', 59:'Aftertouch',
+      11:'Performance', 12:'DAW', 13:'Programmer', 14:current.device === 'x' ? 'Note' : 'Custom',
+      ...(current.device === 'pro-mk3' ? {24:'Note'} : {})};
+    if (setup[index]) return setup[index];
+  }
+  return labels[current.device]?.[index] || '';
+}
+function updateLabels() {
+  for (const [index, el] of buttons) {
+    const label = padLabel(index);
+    el.textContent = [label, showNumbers.checked ? index : ''].filter(x => x !== '').join(' · ');
+    el.setAttribute('aria-label', label ? `${label}（パッド ${index}）` : `パッド ${index}`);
+  }
+}
+showNumbers.addEventListener('change', updateLabels);
+// Firmware palette numbers are not RGB. These are visual hints only.
+const palette = [0, 0x444444, 0x888888, 0xffffff, 0xffaaaa, 0xff4444, 0xaa2222, 0x441111,
+  0xffddaa, 0xff8800, 0x885500, 0xffee66, 0xffff00, 0x99bb00, 0x445500, 0x33ff33,
+  0x00aa00, 0x005500, 0xaaffcc, 0x00ddaa, 0x007755, 0xaaddff, 0x00aaff, 0x005588,
+  0x9999ff, 0x4444ff, 0x222288, 0xffaaff, 0xff44ff, 0x882288, 0xffaaaa, 0xff8888];
+function render(data) {
+  current = {device:data.device, mode:data.mode};
+  updateLabels();
+  status.textContent = `接続中 · ${data.mode.toUpperCase()} · LED更新 ${data.updates} / clear ${data.clears}`;
+  for (const [index, el] of buttons) {
+    const [kind, number] = data.surface[index];
+    const rgb = kind === 'rgb' ? number : palette[number % palette.length];
+    el.style.backgroundColor = `#${rgb.toString(16).padStart(6, '0')}`;
+    el.title = `${padLabel(index) || 'パッド'} ${index} · ${kind} ${kind === 'rgb' ? `#${number.toString(16).padStart(6, '0')}` : number}`;
+  }
+  for (const item of data.midi) log.textContent = `${item.port}: ${item.hex}\n` + log.textContent;
+  if (log.textContent.length > 5000) log.textContent = log.textContent.slice(0, 5000);
+}
+function send(cmd) {
+  busy = busy.catch(() => {}).then(async () => {
+    try {
+      const r = await fetch('/api/step', {method:'POST', headers:{'Content-Type':'text/plain'}, body:cmd});
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      render(await r.json()); error.textContent = '';
+    } catch (e) { error.textContent = String(e); }
+  });
+  return busy;
+}
+for (let row = 9; row >= 0; row--) for (let col = 0; col <= 9; col++) {
+  const index = row * 10 + col;
+  const grid = row >= 1 && row <= 8 && col >= 1 && col <= 8;
+  const edge = !grid && ((col === 9 && row >= 1 && row <= 8) || (row === 9 && col >= 1 && col <= 8) || index === 0 || [80,70,91,92,93,94,95,96,97,98].includes(index));
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = `pad ${grid ? 'grid' : edge ? 'edge' : 'empty'}`;
+  b.textContent = '';
+  if (edge || grid) {
+    buttons.set(index, b);
+    b.addEventListener('pointerdown', e => {
+      if (held !== null) return;
+      e.preventDefault(); held = index; b.classList.add('down'); b.setPointerCapture(e.pointerId);
+      send(`press ${index} ${document.querySelector('#velocity').value}`);
+    });
+    const release = () => { if (held !== index) return; held = null; b.classList.remove('down'); send(`release ${index}`); };
+    b.addEventListener('pointerup', release); b.addEventListener('pointercancel', release);
+    b.addEventListener('lostpointercapture', release);
+  }
+  surface.append(b);
+}
+document.querySelectorAll('[data-command]').forEach(b => b.addEventListener('click', () => send(b.dataset.command)));
+const byte = v => Number(v).toString(16).padStart(2, '0');
+document.querySelector('#setpad').onclick = () => send(`guide midi 21 ${document.querySelector('#layer').value} ${byte(document.querySelector('#target').value)} ${byte(document.querySelector('#color').value)}`);
+document.querySelector('#advance').onclick = () => send(`advance ${document.querySelector('#ms').value}`);
+document.querySelector('#sendmidi').onclick = () => send(`midi ${document.querySelector('#port').value} ${document.querySelector('#hex').value}`);
+document.querySelector('#sendsysex').onclick = () => send(`sysex ${document.querySelector('#port').value} ${document.querySelector('#hex').value}`);
+fetch('/api/state').then(r => r.json()).then(render).catch(e => { error.textContent = String(e); status.textContent = '接続できません'; });
+</script>
+</html>

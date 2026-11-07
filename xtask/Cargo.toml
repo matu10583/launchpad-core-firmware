@@ -6,3 +6,12 @@ publish = false
 license.workspace = true
 
 [dependencies]
+
+[features]
+default = ["launchpad-x"]
+launchpad-x = ["pressure-sensitive", "no-setup-btn", "rgb-color", "host-emulator"]
+launchpad-pro-mk3 = ["pressure-sensitive", "rgb-color", "host-emulator"]
+host-emulator = []
+pressure-sensitive = []
+no-setup-btn = []
+rgb-color = []

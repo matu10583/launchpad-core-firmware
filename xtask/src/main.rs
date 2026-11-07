@@ -39,6 +39,8 @@ mod sys;
 #[cfg(test)]
 #[allow(dead_code)]
 mod driver;
+#[cfg(test)]
+mod utils;
 
 #[cfg(test)]
 mod private_guide_mapping_tests {

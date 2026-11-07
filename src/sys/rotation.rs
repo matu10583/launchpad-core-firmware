@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 Aezurolp
 // Copyright (C) 2025-2026 Anthony Hofmeister
 
+#[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
 use core::cell::UnsafeCell;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -12,22 +13,38 @@ pub enum Rotation {
     UpsideDown,
 }
 
+#[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
 struct RotationSlot {
     inner: UnsafeCell<Rotation>,
 }
 
+#[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
 unsafe impl Sync for RotationSlot {}
 
+#[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
 static ROTATION: RotationSlot = RotationSlot {
     inner: UnsafeCell::new(Rotation::Default),
 };
 
+// The hosted tests run in parallel: isolate this runtime setting per runner
+// while sharing the firmware's actual index mapping below.
+#[cfg(all(feature = "host-emulator", not(target_os = "none")))]
+std::thread_local! {
+    static ROTATION: core::cell::Cell<Rotation> = const { core::cell::Cell::new(Rotation::Default) };
+}
+
 // Current rotation. Not persisted to flash.
 pub fn get() -> Rotation {
+    #[cfg(all(feature = "host-emulator", not(target_os = "none")))]
+    { ROTATION.with(|rotation| rotation.get()) }
+    #[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
     unsafe { *ROTATION.inner.get() }
 }
 
 pub fn set(rotation: Rotation) {
+    #[cfg(all(feature = "host-emulator", not(target_os = "none")))]
+    ROTATION.with(|current| current.set(rotation));
+    #[cfg(not(all(feature = "host-emulator", not(target_os = "none"))))]
     unsafe {
         *ROTATION.inner.get() = rotation;
     }

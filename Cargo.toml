@@ -61,6 +61,7 @@ stm32-metapac = { version = "21.0.0", optional = true }
 [features]
 default = []
 pro-din-probe = [] # Passive, SysEx-triggered diagnostic, included in Pro Mk3 builds only.
+host-emulator = [] # Host-only: omit Pro Mk3 hardware Roadrunner SysEx.
 no-setup-btn = []
 pressure-sensitive = []
 rgb-color = []
