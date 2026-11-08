@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "manuals": [
+    {
+      "alias": "lpx",
+      "updater_product": "/x",
+      "manual": "docs/firmware/lpx.md"
+    },
+    {
+      "alias": "lppmk3",
+      "updater_product": "/lppmk3",
+      "manual": "docs/firmware/lppmk3.md"
+    },
+    {
+      "alias": "mini",
+      "updater_product": "/minimk3",
+      "manual": "docs/firmware/mini.md"
+    },
+    {
+      "alias": "lpp",
+      "updater_product": "/lpp",
+      "manual": "docs/firmware/lpp.md"
+    },
+    {
+      "alias": "mk2",
+      "updater_product": "/mk2",
+      "manual": "docs/firmware/mk2.md"
+    },
+    {
+      "alias": "minimk1",
+      "updater_product": "/minimk1",
+      "manual": "docs/firmware/minimk1.md"
+    },
+    {
+      "alias": "lps",
+      "updater_product": "/lps",
+      "manual": "docs/firmware/lps.md"
+    }
+  ]
+}

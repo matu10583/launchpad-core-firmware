@@ -1,0 +1,22 @@
+name: Firmware manuals match reviewed source
+
+on:
+  push:
+    branches: [code]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  manual-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reject unreviewed firmware changes or stale manuals
+        run: python3 tools/generate_fw_manuals.py --check

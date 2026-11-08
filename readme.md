@@ -40,6 +40,8 @@ Alternatively, download the `.syx` file from the [releases page](../../releases)
 
 ## Device Support
 
+For model-specific **current CoreFW behaviour**, see the [seven device manuals](docs/firmware/README.md). They distinguish source-backed operations from hardware observations and are checked for source changes in CI.
+
 Novation Launchpad support:
 
 | Device                          | Working | RGB | Custom Palettes | Highspeed LED |
@@ -101,13 +103,16 @@ cargo all
 
 ### Flashing the firmware manually
 
-First of all, you need to put your Launchpad into bootloader mode.
+> [!WARNING]
+> The bootloader steps below are **not universal**. In particular, the Pro Mk3 uses its Setup button, not the Capture MIDI button. Check the bootloader instructions for your exact hardware before attempting to write firmware; the [model-specific manuals](docs/firmware/README.md) describe runtime operation and do not authorize flashing.
+
+First put your Launchpad into bootloader mode using the **model-specific** procedure. The following Capture MIDI example is for models whose official bootloader instructions specify that button (such as Launchpad X); it must not be used as universal guidance:
 
 - Unplug the Launchpad from USB, if it is connected.
 - Hold the "Capture MIDI" button on the top right corner of the Launchpad.
 - While holding the button, plug the Launchpad back into USB.
 
-You are now in bootloader mode.
+For those models only, the device should now be in bootloader mode; verify the bootloader MIDI port before proceeding.
 
 You can flash the firmware using our `flash.py` tooling. Here is an example for the Launchpad Pro Mk2
 
