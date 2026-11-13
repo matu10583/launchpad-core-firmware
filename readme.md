@@ -42,6 +42,8 @@ Alternatively, download the `.syx` file from the [releases page](../../releases)
 
 For model-specific **current CoreFW behaviour**, see the [seven device manuals](docs/firmware/README.md). They distinguish source-backed operations from hardware observations and are checked for source changes in CI.
 
+`code` branch firmware builds for Launchpad X and Pro Mk3 run in [GitHub Actions](docs/CI.md); download unverified packages from the matching workflow run's artifacts.
+
 Novation Launchpad support:
 
 | Device                          | Working | RGB | Custom Palettes | Highspeed LED |

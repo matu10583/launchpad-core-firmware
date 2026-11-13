@@ -1,8 +1,11 @@
-name: Launchpad X and Pro Mk3 firmware check
+name: CoreFW code firmware CI (X / Pro Mk3)
 
 on:
   push:
-    branches: [integrate-x-pro-mk3]
+    branches: [code]
+  pull_request:
+    branches: [code]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,10 +19,12 @@ jobs:
       matrix:
         include:
           - device: lpx
+            feature: launchpad-x
             firmware: core-launchpad-x
             model: Launchpad X
             product: /x
           - device: lppmk3
+            feature: launchpad-pro-mk3
             firmware: core-launchpad-pro-mk3
             model: Launchpad Pro MK3
             product: /lppmk3
@@ -32,12 +37,15 @@ jobs:
           toolchain: '1.94.1'
           targets: thumbv7em-none-eabihf
           components: rust-src,llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.device }}
       - name: Test package tooling
-        run: cargo test --locked -p xtask
+        run: cargo test --locked -p xtask --no-default-features --features ${{ matrix.feature }}
       - name: Package ${{ matrix.model }} only
         env:
           CORE_FW_CARGO_LOCKED: '1'
-        run: cargo run --locked -p xtask -- package ${{ matrix.device }} --release
+        run: cargo run --locked -p xtask --bin xtask --no-default-features --features ${{ matrix.feature }} -- package ${{ matrix.device }} --release
       - name: Verify package and manifest
         env:
           MODEL: ${{ matrix.model }}
@@ -61,12 +69,34 @@ jobs:
           assert record['size'] == syx.stat().st_size
           assert record['sha256'] == hashlib.sha256(syx.read_bytes()).hexdigest()
           assert record['message_count'] > 0
+          (build / 'SHA256SUMS.txt').write_text(''.join(
+              f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n'
+              for path in (syx, manifest)))
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Verify checksums
+        working-directory: build
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Upload unverified firmware
+        id: upload
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.device }}-${{ github.sha }}-UNVERIFIED
           path: |
             build/${{ matrix.firmware }}.syx
             build/${{ matrix.firmware }}.manifest.json
+            build/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+      - name: Summarize artifact
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          MODEL: ${{ matrix.model }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          test -n "$ARTIFACT_URL"
+          {
+            echo "## $MODEL (hardware unverified)"
+            echo "- [Download firmware and manifest]($ARTIFACT_URL)"
+            echo "- Source commit: \`$SOURCE_SHA\`"
+            echo '- ZIP includes .syx, .manifest.json and SHA256SUMS.txt; firmware is not automatically flashed or released.'
+          } >> "$GITHUB_STEP_SUMMARY"
